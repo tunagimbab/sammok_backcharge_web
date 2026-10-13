@@ -1,0 +1,25 @@
+{
+  "name": "수정/추가(BackCharge) 등록",
+  "short_name": "삼목수추",
+  "description": "현장 사진과 작업 내용을 입력해 등록용 PPT를 생성합니다",
+  "start_url": "./수정추가_등록.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F3F4F1",
+  "theme_color": "#1B2430",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

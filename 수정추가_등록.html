@@ -1,0 +1,1755 @@
+<!DOCTYPE html>
+<!--
+  ============================================================
+  수정추가_등록.html — 현장 작업 등록 폼 (PWA 메인 페이지)
+  ============================================================
+  목적:
+    현장 관리자가 폰에서 사진을 찍고 작업 내용을 입력하면,
+    서버 전송 없이 폰 안에서 곧바로 "생산 Back Charge" 양식의
+    .pptx 파일을 생성한다. (pptxgenjs 라이브러리 사용)
+
+  포함된 것:
+    - 헤더 정보 입력 폼 (PROJ./STAGE/작업명 등, 드롭다운+직접입력)
+    - 사진 촬영/갤러리 선택 + 미리보기
+    - 자재성 산출기준 표 (행 추가/삭제, M/H 자동계산)
+    - PPT 생성 로직 (실제 BackCharge.pptx 원본 파일의 좌표를 그대로 재현)
+    - 다운로드 / 담당자 메일로 전송 (mailto 연동)
+    - 서비스워커 등록 (오프라인 지원)
+
+  이 파일이 속하지 않는 것:
+    - 서버 통신: 없음. 모든 처리는 이 파일 안, 브라우저 메모리에서 끝남.
+  ============================================================
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1B2430" />
+<title>수정/추가(BackCharge) 등록</title>
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<style>
+  :root {
+    --ink: #1B2430;
+    --muted: #6B7280;
+    --bg: #F3F4F1;
+    --surface: #FFFFFF;
+    --line: #D8D3C7;
+    --accent: #FF6B35;
+    --accent-ink: #FFFFFF;
+    --success: #2E7D32;
+    --danger: #C0392B;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    -webkit-tap-highlight-color: transparent;
+  }
+  body { padding-bottom: 190px; }
+
+  header {
+    background: var(--ink);
+    color: #fff;
+    /* 폰 상단 상태바(시계/배터리)와 겹치지 않도록 안전영역만큼 아래로 내림 */
+    padding: calc(20px + env(safe-area-inset-top)) 20px 16px;
+  }
+  header .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  header h1 { margin: 4px 0 2px; font-size: 21px; font-weight: 700; }
+  header p { margin: 0; font-size: 13px; color: #B8BEC7; }
+  .status-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 10px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(255,255,255,0.08); font-size: 11px; font-family: var(--font-mono);
+  }
+  .status-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .status-chip.offline .dot { background: var(--danger); }
+
+  .perforation {
+    position: relative; height: 1px;
+    background: repeating-linear-gradient(to right, var(--line) 0 6px, transparent 6px 12px);
+  }
+  .perforation::before, .perforation::after {
+    content: ""; position: absolute; top: -7px;
+    width: 14px; height: 14px; border-radius: 50%; background: var(--bg);
+  }
+  .perforation::before { left: -7px; }
+  .perforation::after { right: -7px; }
+
+  main { padding: 18px 16px 8px; max-width: 680px; margin: 0 auto; }
+
+  section.card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .section-eyebrow { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.08em; margin-bottom: 2px; }
+  .section-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .section-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+
+  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; font-weight: 600; }
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  input[type="text"], input[type="date"], textarea, input[type="number"], select {
+    width: 100%; border: 1px solid var(--line); border-radius: 7px;
+    padding: 10px 11px; font-size: 15px; font-family: var(--font-mono);
+    color: var(--ink); background: #FCFCFB;
+  }
+  select { appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; background-size: 16px;
+    padding-right: 32px;
+  }
+  input[type="date"] { font-family: var(--font-body); }
+  textarea { font-family: var(--font-body); resize: vertical; min-height: 72px; }
+  input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+  .photo-input-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 14px; border: 1.5px dashed var(--line); border-radius: 8px;
+    background: #FCFCFB; color: var(--muted); font-size: 13.5px; font-weight: 600; cursor: pointer;
+  }
+  .photo-input-btn svg { width: 18px; height: 18px; }
+  #photoInput { display: none; }
+  .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .photo-thumb { position: relative; aspect-ratio: 4 / 3; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .photo-thumb .remove {
+    position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(27,36,48,0.75); color: #fff; border: none; font-size: 13px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .photo-count { font-size: 11.5px; color: var(--muted); margin-top: 8px; font-family: var(--font-mono); }
+
+  /* 자재성 산출기준 표 */
+  .material-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table.material-table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 12px; }
+  table.material-table th, table.material-table td {
+    border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
+    padding: 5px; text-align: center; white-space: nowrap;
+  }
+  table.material-table th:last-child, table.material-table td:last-child { border-right: none; }
+  table.material-table th {
+    background: #F0ECC9; font-weight: 700; font-size: 10.5px; color: var(--ink);
+  }
+  table.material-table td input {
+    width: 78px; border: none; background: transparent; font-size: 12px;
+    font-family: var(--font-mono); text-align: center; padding: 3px;
+  }
+  table.material-table td select {
+    border: 1px solid var(--line); background: #FCFCFB; font-size: 11px;
+    font-family: var(--font-mono); text-align: center; padding: 3px; border-radius: 4px;
+  }
+  table.material-table td input:focus, table.material-table td select:focus { outline: 1px solid var(--accent); border-radius: 4px; }
+  table.material-table td.mh-cell { font-weight: 700; background: #FBF7E0; }
+  table.material-table td.remove-cell { padding: 0; }
+  .row-remove-btn {
+    width: 22px; height: 22px; border-radius: 50%; border: none;
+    background: var(--danger); color: #fff; font-size: 13px; cursor: pointer;
+  }
+  .material-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+  .add-row-btn {
+    border: 1px dashed var(--line); background: #FCFCFB; color: var(--muted);
+    font-size: 12.5px; font-weight: 600; padding: 7px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .material-total {
+    font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--ink);
+  }
+  .material-total span { color: #1A3FA0; }
+  .note-box {
+    margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+    background: #FCFCFB; border: 1px solid var(--line); font-size: 11.5px; color: var(--muted);
+  }
+
+  .action-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface);
+    border-top: 1px solid var(--line); padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
+  .action-bar .inner { max-width: 680px; margin: 0 auto; display: flex; gap: 10px; }
+  button.primary, a.primary {
+    flex: 1; background: var(--accent); color: var(--accent-ink); border: none; border-radius: 8px;
+    padding: 14px; font-size: 15px; font-weight: 700; cursor: pointer; text-align: center;
+    text-decoration: none; display: block;
+  }
+  button.primary:disabled { opacity: 0.55; }
+  button.secondary { flex: 1; background: var(--ink); color: #fff; border: none; border-radius: 8px; padding: 14px; font-size: 15px; font-weight: 700; cursor: pointer; }
+
+  .toast {
+    position: fixed; left: 16px; right: 16px; bottom: 84px; background: var(--ink); color: #fff;
+    padding: 11px 14px; border-radius: 8px; font-size: 13.5px; text-align: center;
+    max-width: 648px; margin: 0 auto; display: none;
+  }
+  .toast.show { display: block; }
+  .toast.error { background: var(--danger); }
+  .toast.success { background: var(--success); }
+
+  footer.note { max-width: 680px; margin: 0 auto; padding: 4px 16px 24px; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+
+  /* ---- 사번 게이트 (등록된 관리자만 사용) ---- */
+  #adminGate {
+    position: fixed; inset: 0; z-index: 100;
+    background: var(--ink); color: #fff;
+    /* 기본은 숨김. 저장된 사번이 없을 때만 openAdminGate()가 display:flex 로 보여줌 */
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  #adminGate .gate-box { width: 100%; max-width: 360px; }
+  #adminGate .eyebrow { font-family: var(--font-mono); font-size: 11px; color: var(--accent); letter-spacing: 0.1em; }
+  #adminGate h2 { margin: 6px 0 18px; font-size: 19px; }
+  #adminGate select {
+    width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #3A4453;
+    background: #232C39; color: #fff; font-size: 15px; margin-bottom: 12px;
+  }
+  #adminGate button {
+    width: 100%; padding: 13px; border: none; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+  }
+  #adminGate button:disabled { opacity: 0.4; }
+  #adminGate .gate-note { margin-top: 14px; font-size: 11.5px; color: #9AA3B2; line-height: 1.6; }
+
+  .registrant-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding: 7px 11px; border-radius: 7px;
+    background: rgba(255,255,255,0.06); font-size: 12px;
+  }
+  .registrant-bar button {
+    background: none; border: none; color: var(--accent); font-size: 11.5px;
+    font-weight: 700; cursor: pointer; padding: 0;
+  }
+
+  /* ---- 내 PPT 목록 / 전송 확인 ---- */
+  .history-open-btn {
+    width: 100%; margin-top: 8px; padding: 9px 11px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06); color: #fff; font-size: 12.5px; font-weight: 700; cursor: pointer; text-align: left;
+  }
+  #historyPanel {
+    display: none; position: fixed; inset: 0; z-index: 90; background: var(--paper, #F3F4F1); overflow-y: auto;
+  }
+  #historyPanel .panel-head {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px;
+    background: var(--ink); color: #fff; padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
+  }
+  #historyPanel .panel-head button { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; padding: 0 6px; }
+  #historyPanel .panel-head span { font-size: 16px; font-weight: 700; }
+  #historyBody { max-width: 680px; margin: 0 auto; padding: 14px 16px 40px; }
+  .hist-empty { padding: 40px 0; text-align: center; color: var(--muted); font-size: 14px; }
+  .hist-note { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .hist-item {
+    display: block; width: 100%; text-align: left; background: var(--surface, #fff); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; cursor: pointer; color: var(--ink);
+  }
+  .hist-name { font-size: 14.5px; font-weight: 700; word-break: break-all; }
+  .hist-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .hist-status { font-size: 12.5px; font-weight: 700; margin-top: 6px; }
+  .st-sent { color: #1E7A46; }
+  .st-opened { color: #B7791F; }
+  .st-created, .st-notsent { color: #C0392B; }
+  .hist-actions { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .chip-btn {
+    border: 1px solid var(--line); background: #FCFCFB; color: var(--ink); border-radius: 999px;
+    padding: 7px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .big-btn {
+    flex: 1 1 30%; min-width: 0; border: 1.5px solid var(--ink); background: #fff; color: var(--ink);
+    border-radius: 10px; padding: 13px 6px; font-size: 14px; font-weight: 700; cursor: pointer; line-height: 1.25; word-break: keep-all;
+  }
+  .big-btn:active { background: #F0EEE8; }
+  .hist-actions .big-btn { flex: 1 1 100%; }
+  /* 날짜 입력칸(읽기 전용, 탭하면 자체 달력이 열림) */
+  input.date-input { font-family: var(--font-body); cursor: pointer; }
+  #dpOverlay { display: none; position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; padding: 16px; }
+  #dpOverlay .dp-box { background: #fff; border-radius: 14px; width: 100%; max-width: 340px; padding: 14px; }
+  #dpOverlay .dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  #dpOverlay .dp-head b { font-size: 16px; }
+  #dpOverlay .dp-nav { border: 1px solid var(--line); background: #FCFCFB; border-radius: 8px; width: 44px; height: 40px; font-size: 18px; cursor: pointer; }
+  #dpOverlay .dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+  #dpOverlay .dp-wd { text-align: center; font-size: 12px; color: var(--muted); padding: 4px 0; }
+  #dpOverlay .dp-day { height: 40px; border: none; border-radius: 8px; background: #FCFCFB; font-size: 15px; cursor: pointer; color: var(--ink); }
+  #dpOverlay .dp-day:disabled { color: #C9C7BF; background: transparent; cursor: default; }
+  #dpOverlay .dp-day.today { outline: 1.5px solid var(--accent); }
+  #dpOverlay .dp-day.sel { background: var(--ink); color: #fff; font-weight: 700; }
+  #dpOverlay .dp-foot { display: flex; gap: 8px; margin-top: 10px; }
+  #dpOverlay .dp-foot button { flex: 1; border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 11px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  /* 소요시수 계산 */
+  .mh-calc { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .mh-calc .mh-in { flex: 1 1 80px; min-width: 0; }
+  .mh-calc .mh-in label { font-size: 12px; }
+  .mh-calc .mh-op { font-size: 20px; font-weight: 700; padding-top: 18px; }
+  .mh-calc .mh-out { flex: 1 1 90px; min-width: 0; background: #FBF7E0; border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; font-size: 18px; font-weight: 700; color: #1A3FA0; text-align: center; margin-top: 0; }
+  #gateCustom { display: none; margin-bottom: 10px; }
+  #gateCustom input { margin-bottom: 8px; }
+  .chip-btn.danger { color: #C0392B; border-color: #E5B8B2; }
+  .preview-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; max-height: 70vh; }
+  .preview-slide { background: #fff; font-family: var(--font-body); }
+  #confirmModal {
+    display: none; position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,0.55);
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  #confirmModal .box { background: #fff; border-radius: 12px; padding: 20px 18px; width: 100%; max-width: 340px; }
+  #confirmModal h3 { margin: 0 0 6px; font-size: 16px; }
+  #confirmModal p { margin: 0 0 14px; font-size: 13px; color: var(--muted); }
+  #confirmModal button { width: 100%; padding: 12px; border-radius: 8px; border: none; font-size: 14.5px; font-weight: 700; cursor: pointer; margin-top: 8px; }
+  #confirmSent, #confirmToOk { background: var(--accent); color: #fff; }
+  #confirmToCancel { background: #EEE; color: var(--ink); }
+  #confirmNotSent { background: var(--ink); color: #fff; }
+  #confirmLater { background: #EEE; color: var(--ink); }
+  #confirmModal input[type=email], #confirmModal input[type=text] {
+    width: 100%; padding: 11px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; box-sizing: border-box;
+  }
+
+  /* ---- 자재 프리셋 칩 ---- */
+  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .preset-chip {
+    border: 1px solid var(--line); background: #FCFCFB; color: var(--ink);
+    font-size: 11.5px; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  }
+  .preset-chip:active { background: #F0EEE8; }
+</style>
+</head>
+<body>
+
+<!-- 사번 게이트: 등록된 관리자만 사용하도록 최초 접속 시 확인. 서버가 없어 완전한
+     보안은 아니고(개발자도구로 우회 가능), 사내 인원 구분/실수 방지 목적의 장치임. -->
+<div id="adminGate">
+  <div class="gate-box">
+    <div class="eyebrow">ACCESS CHECK</div>
+    <h2>사번을 선택해주세요</h2>
+    <select id="gateSelect">
+      <option value="">-- 사번 / 이름 선택 --</option>
+    </select>
+    <div id="gateCustom">
+      <input type="text" id="gateCustomId" inputmode="numeric" autocomplete="off" placeholder="사번 직접 입력" />
+      <input type="text" id="gateCustomName" autocomplete="off" placeholder="이름 직접 입력" />
+    </div>
+    <button type="button" id="gateConfirmBtn" disabled>확인</button>
+    <div class="gate-note">한 번 선택하면 이 폰에 저장되어 다음부터는 자동으로 인식됩니다.</div>
+  </div>
+</div>
+
+<header>
+  <div class="eyebrow">WORK ORDER · 생산 Back Charge</div>
+  <h1>수정/추가(BackCharge) 등록</h1>
+  <p>사진과 내용을 입력하면 폰에서 바로 PPT가 만들어집니다</p>
+  <div class="status-chip" id="statusChip"><span class="dot"></span><span id="statusText">온라인</span></div>
+  <div class="registrant-bar">
+    <span id="registrantLabel">등록자: -</span>
+    <button type="button" id="registrantChangeBtn">변경</button>
+  </div>
+  <button type="button" class="history-open-btn" id="historyOpenBtn">내 PPT 목록</button>
+</header>
+<div class="perforation"></div>
+
+<main>
+
+  <section class="card">
+    <div class="section-eyebrow">01</div>
+    <div class="section-title">헤더 정보</div>
+
+    <div class="field">
+      <label for="h_proj">PROJ.</label>
+      <select id="h_proj"></select>
+      <input type="text" id="h_proj_custom" placeholder="PROJ. 직접 입력" style="display:none; margin-top:6px;" />
+    </div>
+
+    <div class="field-row">
+      <div class="field"><label for="h_date">발생일자</label><input type="text" id="h_date" class="date-input" readonly inputmode="none" placeholder="날짜 선택" /></div>
+      <div class="field">
+        <label for="h_stage">STAGE</label>
+        <select id="h_stage"></select>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>작업기간(추정)</label>
+      <div class="field-row">
+        <input type="text" id="h_period_start" class="date-input" readonly inputmode="none" placeholder="시작일" />
+        <input type="text" id="h_period_end" class="date-input" readonly inputmode="none" placeholder="종료일" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="h_title">작업명 <span style="font-weight:400;color:#9AA3B2;font-size:12px;">(프로젝트 번호는 입력하지 마세요)</span></label>
+      <input type="text" id="h_title" autocomplete="off" placeholder="작업명 입력 (프로젝트 번호는 쓰지 마세요)" />
+    </div>
+
+    <div class="field-row">
+      <div class="field"><label for="h_gongjong">공종(CG CODE) <span style="font-weight:400;color:#9AA3B2;font-size:11px;">자동</span></label><input type="text" id="h_gongjong" value="" readonly placeholder="STAGE 선택 시 자동" /></div>
+      <div class="field">
+        <label for="h_causeorg">원인조직</label>
+        <select id="h_causeorg"></select>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label for="h_dept">작업부서</label>
+        <input type="text" id="h_dept" value="선박의장2부" readonly />
+      </div>
+      <div class="field">
+        <label for="h_vendor">작업 직/반</label>
+        <input type="text" id="h_vendor" value="삼목기업" readonly />
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">02</div>
+    <div class="section-title">사진 (원인 및 문제점)</div>
+    <div style="display:flex; gap:8px;">
+      <button type="button" class="photo-input-btn" id="cameraTrigger" style="flex:1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 7h3l2-2h6l2 2h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/>
+          <circle cx="12" cy="13" r="3.5"/>
+        </svg>
+        촬영하기
+      </button>
+      <button type="button" class="photo-input-btn" id="galleryTrigger" style="flex:1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <circle cx="8.5" cy="8.5" r="1.5"/>
+          <path d="M21 15l-5-5L5 21"/>
+        </svg>
+        갤러리
+      </button>
+    </div>
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" multiple style="display:none" />
+    <input type="file" id="galleryInput" accept="image/*" multiple style="display:none" />
+    <div class="photo-grid" id="photoGrid"></div>
+    <div class="photo-count" id="photoCount"></div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">03</div>
+    <div class="section-title">작업내용</div>
+    <textarea id="workContent" placeholder="예)&#10;122BLK PM322,112 서포트 수정 작업&#10;&#10;자재번호&#10;2372TPQPM322P122" style="min-height:110px;"></textarea>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">04</div>
+    <div class="section-title">소요시수 계산</div>
+    <div class="section-desc">명수 × 시수 = M/H (소요시수 계). 자재성 산출기준은 담당자가 PPT에서 직접 입력합니다.</div>
+    <div class="mh-calc">
+      <div class="mh-in"><label for="mh_people">명수</label><input type="number" id="mh_people" inputmode="decimal" step="any" min="0" placeholder="0" /></div>
+      <div class="mh-op">×</div>
+      <div class="mh-in"><label for="mh_hours">시수</label><input type="number" id="mh_hours" inputmode="decimal" step="any" min="0" placeholder="0" /></div>
+      <div class="mh-op">=</div>
+      <div class="mh-in"><label>소요시수 계</label><div class="mh-out"><span id="mh_total">0.0</span> M/H</div></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="note">
+  이 페이지는 서버로 사진이나 입력값을 전송하지 않습니다. PPT 생성은 폰 안에서 전부 처리됩니다.
+  <div id="appVersion" style="margin-top:6px;"></div>
+</footer>
+
+<div class="action-bar">
+  <div class="inner" id="actionInner">
+    <button class="primary" id="generateBtn">PPT 생성</button>
+  </div>
+  <div id="actionSecondary" style="text-align:center; margin-top:6px;"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 내 PPT 목록(이력) 화면: 이 폰에서 만든 PPT와 전송 상태를 보여줌 -->
+<div id="historyPanel">
+  <div class="panel-head"><button type="button" id="historyBack" aria-label="뒤로">←</button><span id="historyTitle">내 PPT 목록</span></div>
+  <div id="historyBody"></div>
+</div>
+
+<!-- 메일 앱을 다녀온 뒤 전송 여부를 확인하는 창 -->
+<div id="confirmModal">
+  <div class="box">
+    <div id="confirmStep1">
+      <h3>메일을 보내셨나요?</h3>
+      <p>폰은 메일이 실제로 발송됐는지, 누구에게 보냈는지 알 수 없어서 직접 알려주셔야 목록에 기록됩니다.</p>
+      <button type="button" id="confirmSent">보냈음</button>
+      <button type="button" id="confirmNotSent">안 보냈음</button>
+      <button type="button" id="confirmLater">나중에 확인</button>
+    </div>
+    <div id="confirmStep2" style="display:none;">
+      <h3>누구에게 보내셨나요?</h3>
+      <p>받는 사람 메일 주소를 확인하거나 수정해주세요.</p>
+      <input type="text" id="confirmTo" list="dl_recipients" autocomplete="off" />
+      <datalist id="dl_recipients"></datalist>
+      <button type="button" id="confirmToOk">확인</button>
+      <button type="button" id="confirmToCancel">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- PPT 생성 라이브러리: 인터넷 없이도 동작하도록 같은 폴더의 파일을 사용 (pptxgenjs 3.12.0, MIT) -->
+<script src="./pptxgen.bundle.js"></script>
+<script>
+/* ────────────────────────────────────────────────
+   사번 게이트 (등록된 관리자만 사용)
+   ⚠ 서버가 없어 진짜 인증이 아니라 "구분/실수 방지" 수준의 장치입니다.
+   마음만 먹으면 브라우저 개발자도구로 우회 가능 — 사내 인원 전용 용도로만 사용하세요.
+   관리자가 늘거나 줄면 이 배열만 수정하면 됩니다.
+──────────────────────────────────────────────── */
+const ADMIN_LIST = [
+  { id: "6397914", name: "윤경수" },
+  { id: "6195493", name: "김영민" },
+  { id: "6506857", name: "정석진" },
+  { id: "6364300", name: "서동진" },
+  { id: "6190907", name: "허성국" },
+  { id: "6491404", name: "권병수" },
+  { id: "6509268", name: "윤수상" },
+  { id: "6180880", name: "차현창" },
+  { id: "6378921", name: "김민재" },
+  { id: "6507444", name: "정현우" },
+  { id: "6453372", name: "조재우" },
+  // 관리자가 늘거나 줄면 이 목록에 한 줄씩 추가/삭제하세요.
+];
+const ADMIN_STORAGE_KEY = "backcharge_admin";
+
+function getSavedAdmin() {
+  try {
+    return JSON.parse(localStorage.getItem(ADMIN_STORAGE_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+function setSavedAdmin(admin) {
+  localStorage.setItem(ADMIN_STORAGE_KEY, JSON.stringify(admin));
+}
+function clearSavedAdmin() {
+  localStorage.removeItem(ADMIN_STORAGE_KEY);
+}
+
+function renderRegistrantBar(admin) {
+  document.getElementById("registrantLabel").textContent = admin ? `등록자: ${admin.name} (${admin.id})` : "등록자: -";
+}
+
+const GATE_CUSTOM = "__gate_custom__";
+function openAdminGate() {
+  const gate = document.getElementById("adminGate");
+  const select = document.getElementById("gateSelect");
+  select.innerHTML = '<option value="">-- 사번 / 이름 선택 --</option>';
+  ADMIN_LIST.forEach((a) => {
+    const opt = document.createElement("option");
+    opt.value = a.id;
+    opt.textContent = `${a.id} · ${a.name}`;
+    select.appendChild(opt);
+  });
+  // 목록에 없는 사람은 사번/이름을 직접 입력할 수 있다.
+  const customOpt = document.createElement("option");
+  customOpt.value = GATE_CUSTOM;
+  customOpt.textContent = "✏️ 직접 입력 (목록에 없음)";
+  select.appendChild(customOpt);
+  gate.style.display = "flex";
+
+  const customBox = document.getElementById("gateCustom");
+  const idIn = document.getElementById("gateCustomId");
+  const nameIn = document.getElementById("gateCustomName");
+  idIn.value = ""; nameIn.value = ""; customBox.style.display = "none";
+  const confirmBtn = document.getElementById("gateConfirmBtn");
+  confirmBtn.disabled = true;
+  const refresh = () => {
+    const isCustom = select.value === GATE_CUSTOM;
+    customBox.style.display = isCustom ? "block" : "none";
+    confirmBtn.disabled = isCustom ? !(idIn.value.trim() && nameIn.value.trim()) : !select.value;
+  };
+  select.onchange = refresh;
+  idIn.oninput = refresh; nameIn.oninput = refresh;
+  confirmBtn.onclick = () => {
+    let admin;
+    if (select.value === GATE_CUSTOM) {
+      admin = { id: idIn.value.trim(), name: nameIn.value.trim(), custom: true };
+      if (!admin.id || !admin.name) return;
+    } else {
+      admin = ADMIN_LIST.find((a) => a.id === select.value);
+    }
+    if (!admin) return;
+    setSavedAdmin(admin);
+    renderRegistrantBar(admin);
+    gate.style.display = "none";
+  };
+}
+
+document.getElementById("registrantChangeBtn").addEventListener("click", () => {
+  clearSavedAdmin();
+  openAdminGate();
+});
+
+(function initAdminGate() {
+  const saved = getSavedAdmin();
+  if (saved && (saved.custom || ADMIN_LIST.some((a) => a.id === saved.id))) {
+    renderRegistrantBar(saved);
+  } else {
+    openAdminGate();
+  }
+})();
+
+/* ────────────────────────────────────────────────
+   자재 프리셋 (엑셀 "자재성 작업 LIST" 참고 항목)
+   자주 쓰는 자재를 버튼 한 번으로 채워 넣기 위한 목록.
+   새 자재가 자주 나오면 이 배열에 항목을 추가하면 됨.
+──────────────────────────────────────────────── */
+const MATERIAL_PRESETS = [
+  { label: "PIPE SUPPORT(경량)", 공종: "배관", 구분: "PIPE SUPPORT", 재질: "PIPE SUPPORT", SIZE: "중량 10KG 초과 20KG 이하", 원단위_CODE: "9SWPSUPP_M" },
+  { label: "PIPE SUPPORT(중량)", 공종: "배관", 구분: "PIPE SUPPORT", 재질: "PIPE SUPPORT", SIZE: "중량 100KG 초과", 원단위_CODE: "9SWPSUPP_G" },
+  { label: "PLATFORM", 공종: "철의", 구분: "PLATFORM", 재질: "PLATFORM", SIZE: "중량 200KG 초과 ~ 500KG 이하", 원단위_CODE: "9SWFPLTF_X" },
+  { label: "SUPPORT", 공종: "철의", 구분: "SUPPORT", 재질: "SUPPORT", SIZE: "중량 5KG 이하", 원단위_CODE: "9SWFSUPP_T" },
+  { label: "LIFELINESTANCHION", 공종: "철의", 구분: "LIFELINESTANCHION", 재질: "LIFELINESTANCHION", SIZE: "중량 20KG 초과 ~ 100KG 이하", 원단위_CODE: "9SWFLIFE_M" },
+];
+
+/* ────────────────────────────────────────────────
+   자재 입력 자동완성 (이 폰 안에서만 저장, 서버 전송 없음)
+   PPT를 생성할 때마다 입력했던 값을 기억해뒀다가 datalist로 제안.
+──────────────────────────────────────────────── */
+const AUTOCOMPLETE_KEY = "backcharge_material_autocomplete";
+const AUTOCOMPLETE_FIELDS = ["공종", "구분", "재질", "SIZE", "STAGE", "원단위_CODE"];
+
+function loadAutocompleteStore() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTOCOMPLETE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+function saveAutocompleteStore(store) {
+  localStorage.setItem(AUTOCOMPLETE_KEY, JSON.stringify(store));
+}
+function renderAutocompleteLists() {
+  const store = loadAutocompleteStore();
+  AUTOCOMPLETE_FIELDS.forEach((field) => {
+    const dl = document.getElementById(`dl_${field}`);
+    if (!dl) return;
+    dl.innerHTML = (store[field] || []).map((v) => `<option value="${v}"></option>`).join("");
+  });
+}
+function rememberAutocompleteValues(rows) {
+  const store = loadAutocompleteStore();
+  AUTOCOMPLETE_FIELDS.forEach((field) => {
+    const set = new Set(store[field] || []);
+    rows.forEach((row) => { if (row[field]) set.add(row[field]); });
+    store[field] = Array.from(set).slice(-30); // 최근 30개까지만 보관
+  });
+  saveAutocompleteStore(store);
+  renderAutocompleteLists();
+}
+renderAutocompleteLists();
+
+/* ────────────────────────────────────────────────
+   실제 BackCharge.pptx에서 추출한 정확한 치수 (python app_v3.py와 동일)
+──────────────────────────────────────────────── */
+const SLIDE_W = 13.333, SLIDE_H = 7.5;
+const TABLE_LEFT = 0.218, TABLE_TOP = 0.753;
+const COL_W = [1.432, 1.432, 1.432, 1.432, 0.716, 0.716, 0.669, 0.986, 0.493, 1.209, 2.382];
+const ROW_H = [0.32, 0.32, 0.32, 0.32, 2.176, 1.738, 0.957, 0.45]; // 비자재성(7번째) 높이를 20% 줄이고(1.196→0.957) 그만큼 자재성(6번째)에 더함(1.499→1.738)
+
+// 누적합 계산: [1,2,3] -> [0,1,3,6] (열 너비/행 높이의 시작 좌표를 구할 때 사용)
+function cumulative(arr) {
+  const out = [0];
+  let s = 0;
+  for (const v of arr) { s += v; out.push(s); }
+  return out;
+}
+const COL_X = cumulative(COL_W);
+const ROW_Y = cumulative(ROW_H);
+
+// 표의 [행 r1~r2) x 열 c1~c2) 범위가 실제 슬라이드에서 차지하는 좌표(in)를 계산.
+// 사진/자재성 표를 표 셀 위에 정확히 겹쳐 그리기 위한 좌표 변환 함수.
+function region(r1, r2, c1, c2) {
+  return {
+    x: TABLE_LEFT + COL_X[c1],
+    y: TABLE_TOP + ROW_Y[r1],
+    w: COL_X[c2] - COL_X[c1],
+    h: ROW_Y[r2] - ROW_Y[r1],
+  };
+}
+
+// 표 색상이 들어가는 모든 부분은 #D9D9D9 단색으로 통일 (요청 반영)
+const COLOR_HEADER = "D9D9D9";
+const COLOR_BAND = "D9D9D9";
+const COLOR_WHITE = "FFFFFF";
+const COLOR_LINE = "000000";   // 표 내외부 테두리 색 (검정)
+const COLOR_TABLE_HEADER_FILL = "D9D9D9";
+const COLOR_TOTAL_FILL = "D9D9D9";
+
+// PPT 전체 서체 (v1.5.4): 모든 글자를 맑은 고딕으로 지정한다.
+const PPT_FONT = "맑은 고딕";
+const TITLE_FONT_PT = 24;
+const TITLE_BOX_RATIO = 0.85;   // 제목의 "□" 크기 = "생" 글자 크기의 85%
+const MATERIAL_COLUMNS = ["공종", "구분", "재질", "SIZE", "STAGE", "원단위_CODE", "FACTOR", "원단위", "물량"];
+const MATERIAL_COLUMN_WEIGHTS = {
+  "공종": 0.08, "구분": 0.11, "재질": 0.11, "SIZE": 0.17, "STAGE": 0.08,
+  "원단위_CODE": 0.12, "FACTOR": 0.08, "원단위": 0.08, "물량": 0.08, "산출M/H": 0.09,
+};
+// 원본 엑셀의 FACTOR는 숫자가 아니라 "구분" 드롭다운(엑셀 시트의 데이터 유효성 목록과 동일).
+// 실제 곱셈에는 쓰이지 않고, 담당자가 엑셀에서 확인한 원단위 값을 그대로 옮겨 적을 때
+// 어떤 기준으로 산정했는지 참고/기록하기 위한 값이다. (산출M/H 계산에는 영향 없음)
+const FACTOR_OPTIONS = ["수정원단위(기준)", "추가설치", "현장형취", "수정", "폐기", "이동1", "이동2"];
+
+/* ────────────────────────────────────────────────
+   헤더 드롭다운 선택지 (insert_data.xlsx 기준)
+   항목이 늘어나면 이 배열에만 추가하면 폼에 자동 반영됨
+──────────────────────────────────────────────── */
+const CUSTOM_VALUE = "__custom__";
+const HEADER_OPTIONS = {
+  proj: ["2371", "2372", "5510", "5513", "5514", "5515", "2597", "2579", "4506"],
+  stage: ["PE", "DOCK", "안벽"],
+  // 작업명은 드롭다운 없이 직접 입력만 받는다. (v1.5.3)
+  causeorg: ["1.정도불량", "2.타조직(탑재,기계,도장 등)", "3.설계", "4.선행", "5.기타"],
+  // 공종(WG501)·작업부서(선박의장2부)·작업 직/반(삼목기업)은 고정값이라
+  // 드롭다운이 아니라 HTML의 readonly 입력칸(h_gongjong/h_dept/h_vendor)에 직접 들어 있습니다.
+  // 값을 바꾸려면 해당 <input>의 value="..." 를 수정하세요.
+};
+
+// PROJ./STAGE/작업명 등 <select> 드롭다운을 옵션 목록으로 채우고,
+// "직접입력"을 고르면 옆의 텍스트 입력칸이 나타나도록 연결한다.
+function setupDropdown(key, options, allowCustom = true) {
+  const select = document.getElementById(`h_${key}`);
+  const customInput = document.getElementById(`h_${key}_custom`);
+  select.innerHTML = "";
+  const placeholderOpt = document.createElement("option");
+  placeholderOpt.value = "";
+  placeholderOpt.textContent = "선택하세요";
+  select.appendChild(placeholderOpt);
+  options.forEach((opt) => {
+    const el = document.createElement("option");
+    el.value = opt;
+    el.textContent = opt;
+    select.appendChild(el);
+  });
+  if (allowCustom && customInput) {
+    const customOpt = document.createElement("option");
+    customOpt.value = CUSTOM_VALUE;
+    customOpt.textContent = "직접입력";
+    select.appendChild(customOpt);
+    select.addEventListener("change", () => {
+      customInput.style.display = select.value === CUSTOM_VALUE ? "block" : "none";
+      if (select.value === CUSTOM_VALUE) customInput.focus();
+    });
+  }
+}
+
+// 드롭다운의 최종 선택값을 반환. "직접입력"이 선택된 경우 옆 텍스트 입력값을 대신 사용.
+function getDropdownValue(key) {
+  const select = document.getElementById(`h_${key}`);
+  if (select.tagName !== "SELECT") return select.value.trim();   // 작업명처럼 일반 입력칸인 경우
+  const customInput = document.getElementById(`h_${key}_custom`);
+  return select.value === CUSTOM_VALUE && customInput ? customInput.value.trim() : select.value;
+}
+
+Object.entries(HEADER_OPTIONS).forEach(([key, options]) => setupDropdown(key, options, key === "proj"));
+
+// STAGE에 따라 공종(CG CODE) 자동 입력: PE = WG301, DOCK/안벽 = WG501
+const STAGE_TO_GONGJONG = { "PE": "WG301", "DOCK": "WG501", "안벽": "WG501" };
+document.getElementById("h_stage").addEventListener("change", (e) => {
+  document.getElementById("h_gongjong").value = STAGE_TO_GONGJONG[e.target.value] || "";
+});
+
+
+/* ────────────────────────────────────────────────
+   자체 달력 (v1.5.3): 날짜를 탭하면 "설정" 버튼 없이 바로 입력칸에 반영된다.
+   입력칸의 value는 YYYY-MM-DD, min 속성보다 이전 날짜는 선택할 수 없다.
+──────────────────────────────────────────────── */
+const DatePicker = (function () {
+  const ov = document.createElement("div");
+  ov.id = "dpOverlay";
+  ov.innerHTML = '<div class="dp-box"><div class="dp-head"><button type="button" class="dp-nav" data-d="-1">◀</button><b id="dpTitle"></b><button type="button" class="dp-nav" data-d="1">▶</button></div><div class="dp-grid" id="dpGrid"></div><div class="dp-foot"><button type="button" id="dpToday">오늘</button><button type="button" id="dpClear">지우기</button><button type="button" id="dpClose">닫기</button></div></div>';
+  document.body.appendChild(ov);
+  const pad = (n) => String(n).padStart(2, "0");
+  const iso = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+  let target = null, vy = 0, vm = 0;
+
+  function render() {
+    document.getElementById("dpTitle").textContent = `${vy}년 ${vm + 1}월`;
+    const grid = document.getElementById("dpGrid");
+    const min = target.getAttribute("min") || "";
+    const today = new Date(), todayIso = iso(today.getFullYear(), today.getMonth(), today.getDate());
+    let html = ["일", "월", "화", "수", "목", "금", "토"].map((w) => `<div class="dp-wd">${w}</div>`).join("");
+    const first = new Date(vy, vm, 1).getDay(), days = new Date(vy, vm + 1, 0).getDate();
+    for (let i = 0; i < first; i++) html += "<div></div>";
+    for (let d = 1; d <= days; d++) {
+      const v = iso(vy, vm, d);
+      const cls = "dp-day" + (v === todayIso ? " today" : "") + (v === target.value ? " sel" : "");
+      html += `<button type="button" class="${cls}" data-iso="${v}" ${min && v < min ? "disabled" : ""}>${d}</button>`;
+    }
+    grid.innerHTML = html;
+  }
+  function setValue(v) {
+    target.value = v;
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    close();
+  }
+  function close() { ov.style.display = "none"; target = null; }
+  function open(input) {
+    target = input;
+    const base = input.value || input.getAttribute("min") || iso(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+    vy = Number(base.slice(0, 4)); vm = Number(base.slice(5, 7)) - 1;
+    render();
+    ov.style.display = "flex";
+  }
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov) { close(); return; }
+    const nav = e.target.closest(".dp-nav");
+    if (nav) { vm += Number(nav.dataset.d); if (vm < 0) { vm = 11; vy--; } if (vm > 11) { vm = 0; vy++; } render(); return; }
+    const day = e.target.closest(".dp-day");
+    if (day && !day.disabled) setValue(day.dataset.iso);
+  });
+  ov.querySelector("#dpToday").addEventListener("click", () => {
+    const t = new Date(), v = iso(t.getFullYear(), t.getMonth(), t.getDate());
+    const min = target.getAttribute("min") || "";
+    if (min && v < min) { showToast("오늘은 선택할 수 없는 날짜입니다.", "error"); return; }
+    setValue(v);
+  });
+  ov.querySelector("#dpClear").addEventListener("click", () => setValue(""));
+  ov.querySelector("#dpClose").addEventListener("click", close);
+  document.querySelectorAll("input.date-input").forEach((inp) => inp.addEventListener("click", () => open(inp)));
+  return { open };
+})();
+
+// ---- 날짜 표시 형식: YYYY-MM-DD -> YYYY.MM.DD ----
+function formatDateDot(isoDate) {
+  return isoDate ? isoDate.replaceAll("-", ".") : "";
+}
+
+// 파일명에 쓸 수 없는 문자( \\ / : * ? " < > | )를 "-"로 바꿈. 예: "서포트 수정/추가" -> "서포트 수정-추가"
+function safeFilePart(text) {
+  return String(text || "").replace(/[\\/:*?"<>|]/g, "-").trim();
+}
+
+// 파일명에 프로젝트 번호(PROJ. 4자리)를 넣을지 여부. false = 윤경수_작업명.pptx / true = 윤경수_5513_작업명.pptx
+const FILENAME_INCLUDE_PROJ = false;
+
+// 작업명에서 프로젝트 번호를 제거한다: PROJ. 목록의 값, 선택한 PROJ. 값, 그리고 단독으로 적힌 4자리 숫자.
+function stripProjectNumbers(title) {
+  let t = title.replace(/(?<![0-9A-Za-z])\d{4}(?![0-9A-Za-z])/g, "");
+  const projNos = [...HEADER_OPTIONS.proj, getDropdownValue("proj")].filter(Boolean);
+  projNos.forEach((no) => {
+    t = t.replace(new RegExp("(^|[^0-9])" + no.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![0-9])", "g"), "$1");
+  });
+  t = t.replace(/\(\s*\)|\[\s*\]/g, ""); // 번호만 지운 뒤 남은 빈 괄호 제거
+  return t.replace(/^[\s_\-\/·,]+|[\s_\-\/·,]+$/g, "").replace(/\s{2,}/g, " ");
+}
+
+// 작업기간: 종료일이 시작일보다 빠르면 선택할 수 없게 한다.
+const periodStartEl = document.getElementById("h_period_start");
+const periodEndEl = document.getElementById("h_period_end");
+function periodIsValid() {
+  const st = periodStartEl.value, en = periodEndEl.value;
+  periodEndEl.min = st || "";           // 시작일 이전 날짜는 달력에서 선택 불가
+  return !(st && en && en < st);
+}
+function onPeriodChange() {
+  if (!periodIsValid()) {
+    periodEndEl.value = "";
+    showToast("작업기간 종료일은 시작일 이후여야 합니다.", "error");
+  }
+}
+periodStartEl.addEventListener("change", onPeriodChange);
+periodEndEl.addEventListener("change", onPeriodChange);
+
+function getPeriodText() {
+  const start = formatDateDot(document.getElementById("h_period_start").value);
+  const end = formatDateDot(document.getElementById("h_period_end").value);
+  if (start && end) return `${start}~${end}`;
+  return start || end || "";
+}
+
+let photos = []; // { file, dataUrl }
+// ---- 소요시수 계산: 명수 × 시수 = M/H (v1.5.3) ----
+// 자재성 산출기준은 폼에서 제외했고, PPT에는 담당자가 입력할 빈 행만 만든다.
+const mhPeopleEl = document.getElementById("mh_people");
+const mhHoursEl = document.getElementById("mh_hours");
+function getManhour() {
+  const people = parseFloat(mhPeopleEl.value);
+  const hours = parseFloat(mhHoursEl.value);
+  const p = isNaN(people) ? 0 : people, h = isNaN(hours) ? 0 : hours;
+  const total = Math.round(p * h * 10) / 10;
+  const entered = mhPeopleEl.value.trim() !== "" || mhHoursEl.value.trim() !== "";
+  const text = entered ? `${p} 명 × ${h} 시수 = ${total.toFixed(1)} M/H` : "";
+  return { people: p, hours: h, total, text };
+}
+function updateManhour() { document.getElementById("mh_total").textContent = getManhour().total.toFixed(1); }
+mhPeopleEl.addEventListener("input", updateManhour);
+mhHoursEl.addEventListener("input", updateManhour);
+
+// ---- 사진 업로드 (촬영 / 갤러리 분리) ----
+const cameraInput = document.getElementById("cameraInput");
+const galleryInput = document.getElementById("galleryInput");
+document.getElementById("cameraTrigger").addEventListener("click", () => cameraInput.click());
+document.getElementById("galleryTrigger").addEventListener("click", () => galleryInput.click());
+
+async function handlePhotoFiles(e) {
+  const files = Array.from(e.target.files || []);
+  for (const file of files) {
+    const dataUrl = await fileToDataUrl(file);
+    photos.push({ file, dataUrl });
+  }
+  e.target.value = "";
+  renderPhotoGrid();
+}
+cameraInput.addEventListener("change", handlePhotoFiles);
+galleryInput.addEventListener("change", handlePhotoFiles);
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPhotoGrid() {
+  const grid = document.getElementById("photoGrid");
+  grid.innerHTML = "";
+  photos.forEach((p, idx) => {
+    const thumb = document.createElement("div");
+    thumb.className = "photo-thumb";
+    thumb.innerHTML = `<img src="${p.dataUrl}" alt="사진 ${idx + 1}" />
+      <button class="remove" data-idx="${idx}" type="button" aria-label="사진 삭제">×</button>`;
+    grid.appendChild(thumb);
+  });
+  grid.querySelectorAll(".remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      photos.splice(Number(btn.dataset.idx), 1);
+      renderPhotoGrid();
+    });
+  });
+  const count = document.getElementById("photoCount");
+  count.textContent = photos.length ? `${photos.length}장 첨부됨` : "";
+}
+
+// ---- 토스트 ----
+let toastTimer;
+function showToast(msg, type = "") {
+  const toast = document.getElementById("toast");
+  toast.textContent = msg;
+  toast.className = `toast show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), type === "error" ? 8000 : 3200); // 오류 문구는 읽을 시간을 더 줌
+}
+
+// ────────────────────────────────────────────────
+// PPT 생성 (BackCharge.pptx 원본 구조 그대로: 8행x11열 병합 표 + 오버레이)
+// ────────────────────────────────────────────────
+// pptxgenjs 표 셀 하나를 만드는 헬퍼. text가 비어도 셀 자체는 생성되어야
+// colspan/rowspan 계산이 어긋나지 않는다.
+function mkCell(text, opts = {}) {
+  return { text: text || "", options: Object.assign({ fontFace: PPT_FONT, fontSize: 11, bold: true, align: "center", valign: "middle" }, opts) };
+}
+
+// BackCharge.pptx 원본의 8행x11열 병합 구조를 그대로 pptxgenjs addTable용
+// rows 배열로 구성한다. colspan/rowspan은 HTML table과 동일한 규칙:
+// 병합되는 칸은 해당 행의 배열에서 아예 생략한다.
+function buildMasterRows(h, workContentText, totalMhText) {
+  // 배경이 밝은 회색(D9D9D9)이므로 흰 글씨 대신 진한 글씨색을 사용한다
+  const H = { fill: { color: COLOR_HEADER }, color: "1B2430" };
+  const B = { fill: { color: COLOR_BAND } };
+  const W = { fill: { color: COLOR_WHITE } };
+
+  const row0 = [
+    mkCell("PROJ.", H),
+    mkCell(h.proj, { ...W, colspan: 2 }),
+    mkCell("발생일자", H),
+    mkCell(h.date, { ...W, colspan: 2 }),
+    mkCell("작업기간(추정)", { ...H, colspan: 2 }),
+    mkCell(h.period, { ...W, colspan: 3 }),
+  ];
+  const row1 = [
+    mkCell("작업명", B),
+    mkCell(h.title, { ...W, colspan: 8 }),
+    mkCell("STAGE", B),
+    mkCell(h.stage, W),
+  ];
+  const row2 = [
+    mkCell("공종", B),
+    mkCell(h.gongjong, W),
+    mkCell("원인조직", B),
+    mkCell(h.causeOrg, { ...W, colspan: 2, fontSize: (h.causeOrg || "").length > 8 ? 9 : 11 }),
+    mkCell("작업부서", { ...B, colspan: 2 }),
+    mkCell(h.dept, { ...W, colspan: 2 }),
+    mkCell("작업 직/반", B),
+    mkCell(h.vendor, W),
+  ];
+  const row3 = [
+    mkCell("원인 및 문제점", { ...B, colspan: 4 }),
+    mkCell("상세 작업 내용", { ...B, colspan: 7 }),
+  ];
+  const row4 = [
+    mkCell("", { ...W, colspan: 4, rowspan: 4 }),
+    mkCell("작업내용", { ...B, colspan: 2, fontSize: 10.5 }),
+    mkCell(workContentText, { ...W, colspan: 5, align: "left", fontSize: 12, color: "1B2430" }),
+  ];
+  const row5 = [
+    mkCell("자재성\n산출기준", { ...B, colspan: 2, fontSize: 10.5 }),
+    mkCell("", { ...W, colspan: 5 }),
+  ];
+  const row6 = [
+    mkCell("비자재성\n산출기준", { ...B, colspan: 2, fontSize: 10.5 }),
+    mkCell("", { ...W, colspan: 5 }),
+  ];
+  const row7 = [
+    mkCell("소요시수 계", { ...B, colspan: 2, fontSize: 10.5 }),
+    mkCell(totalMhText, { ...W, colspan: 5, fontSize: 12, color: "1A3FA0" }),
+  ];
+
+  return [row0, row1, row2, row3, row4, row5, row6, row7];
+}
+
+// 좌측 상단 "□ 생산 Back Charge" 제목과 그 아래 구분선을 그린다.
+function addTitle(slide) {
+  slide.addText([
+    { text: "\u25a1 ", options: { fontSize: Math.round(TITLE_FONT_PT * TITLE_BOX_RATIO * 10) / 10 } },
+    { text: "생산 Back Charge", options: { fontSize: TITLE_FONT_PT } },
+  ], {
+    x: 0.443, y: 0, w: 4.341, h: 0.545, fontFace: PPT_FONT, fontSize: TITLE_FONT_PT, bold: true, valign: "middle",
+  });
+  slide.addShape("line", { x: 0, y: 0.545, w: SLIDE_W, h: 0, line: { color: "000000", width: 5 } });
+}
+
+// "원인 및 문제점" 영역(표의 사진 칸) 위에 사진들을 격자로 겹쳐 그린다.
+// 표 셀 자체에는 이미지를 직접 넣을 수 없는 pptx 포맷 특성 때문에 별도 도형으로 오버레이한다.
+function addPhotoOverlay(slide, photoList) {
+  const r = region(4, 8, 0, 4);
+  if (!photoList.length) {
+    slide.addText("<사진첨부>", { x: r.x, y: r.y, w: r.w, h: r.h, align: "center", valign: "middle", fontFace: PPT_FONT, fontSize: 14, color: "9A978C" });
+    return;
+  }
+  const n = photoList.length;
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const gap = 0.05;
+  const cellW = (r.w - gap * (cols - 1)) / cols;
+  const cellH = (r.h - gap * (rows - 1)) / rows;
+  photoList.forEach((p, idx) => {
+    const rr = Math.floor(idx / cols);
+    const cc = idx % cols;
+    const x = r.x + cc * (cellW + gap);
+    const y = r.y + rr * (cellH + gap);
+    slide.addImage({ data: p.dataUrl, x, y, w: cellW, h: cellH, sizing: { type: "contain", w: cellW, h: cellH } });
+  });
+}
+
+// 전체 조립: 마스터 표(8x11 병합) + 사진 오버레이 + 자재성 표 오버레이를
+// 한 슬라이드에 합쳐 최종 Presentation 객체를 반환한다.
+async function buildPptx(header, workContentText, mh, photoList) {
+  const pptx = new PptxGenJS();
+  pptx.defineLayout({ name: "CUSTOM", width: SLIDE_W, height: SLIDE_H });
+  pptx.layout = "CUSTOM";
+  pptx.theme = { headFontFace: PPT_FONT, bodyFontFace: PPT_FONT };
+  const slide = pptx.addSlide();
+
+  addTitle(slide);
+
+  const total = mh.total;
+  const rows = buildMasterRows(header, workContentText, mh.text);
+
+  slide.addTable(rows, {
+    x: TABLE_LEFT, y: TABLE_TOP, colW: COL_W, rowH: ROW_H,
+    border: { type: "solid", color: COLOR_LINE, pt: 0.75 },
+  });
+
+  addPhotoOverlay(slide, photoList);
+
+  return { pptx, total };
+}
+
+// ---- 생성 버튼 ----
+async function handleGenerate() {
+  const admin = getSavedAdmin();
+  if (!admin) {
+    showToast("사번 확인이 필요합니다.", "error");
+    openAdminGate();
+    return;
+  }
+
+  const header = {
+    proj: getDropdownValue("proj"),
+    date: formatDateDot(document.getElementById("h_date").value),
+    period: getPeriodText(),
+    stage: getDropdownValue("stage"),
+    title: getDropdownValue("title"),
+    gongjong: document.getElementById("h_gongjong").value.trim(),
+    causeOrg: getDropdownValue("causeorg"),
+    dept: document.getElementById("h_dept").value.trim(),
+    vendor: document.getElementById("h_vendor").value.trim(),
+  };
+  const rawWorkContent = document.getElementById("workContent").value.trim();
+
+  if (!header.proj) {
+    showToast("'PROJ.'(프로젝트)를 선택해주세요. 파일명에 사용됩니다.", "error");
+    return;
+  }
+  if (!header.stage) {
+    showToast("'STAGE'를 선택해주세요. (공종이 자동으로 입력됩니다)", "error");
+    return;
+  }
+  if (!periodIsValid()) {
+    showToast("작업기간 종료일이 시작일보다 빠릅니다. 다시 선택해주세요.", "error");
+    return;
+  }
+  // 작업명에 프로젝트 번호를 잘못 적은 경우 자동 제거 (프로젝트는 PROJ. 칸에서만 입력)
+  header.title = stripProjectNumbers(header.title);
+  if (!header.title) {
+    showToast("'작업명' 항목은 필수입니다. (프로젝트 번호는 작업명에 넣지 않습니다)", "error");
+    return;
+  }
+
+  const btn = document.getElementById("generateBtn");
+  btn.disabled = true;
+  btn.textContent = "생성 중...";
+
+  try {
+    const now = new Date();
+    const timestamp = now.toISOString().slice(0, 16).replace("T", " "); // YYYY-MM-DD HH:MM
+    const dateForFile = now.toISOString().slice(0, 10).replaceAll("-", "");
+
+    // PPT 작업내용에는 입력한 내용만 넣는다. (등록자/등록일시는 PPT에 넣지 않음 —
+    // 등록자는 파일명·메일 제목·JSON 기록으로, 등록일시는 JSON 기록으로만 남음)
+    const workContentText = rawWorkContent;
+
+    const mh = getManhour();
+    const { pptx, total } = await buildPptx(header, workContentText, mh, photos);
+    // 파일명 규칙: 등록자이름_작업명.pptx (FILENAME_INCLUDE_PROJ=true 이면 등록자이름_프로젝트_작업명.pptx)
+    const nameParts = [safeFilePart(admin.name)];
+    if (FILENAME_INCLUDE_PROJ) nameParts.push(safeFilePart(header.proj));
+    nameParts.push(safeFilePart(header.title));
+    const fileName = `${nameParts.join("_")}.pptx`;
+    const rawBlob = await pptx.write({ outputType: "blob" });
+    // pptxgenjs가 돌려주는 blob은 MIME 타입이 붙지 않는 경우가 있어(zip으로 인식) 명시적으로 지정
+    const blob = new Blob([rawBlob], { type: PPTX_MIME });
+
+    // 통계/향후 현황판 연동용 데이터 (PPT와 같은 내용을 구조화된 JSON으로도 함께 준비)
+    const recordData = {
+      등록자: admin.name, 사번: admin.id, 등록일시: now.toISOString(),
+      ...header, 작업내용: rawWorkContent,
+      명수: mh.people, 시수: mh.hours, 소요시수계: total,
+    };
+
+    // 내 PPT 목록용 기록 (사진은 미리보기용으로 축소해서 저장)
+    const rec = {
+      id: String(now.getTime()), createdAt: now.toISOString(),
+      admin: { id: admin.id, name: admin.name },
+      fileName, header: { ...header }, workContent: rawWorkContent,
+      manpower: mh.people, hours: mh.hours, mhText: mh.text, total,
+      photos: await Promise.all(photos.map((p) => makeThumb(p.dataUrl))),
+      blob, status: "created",
+    };
+    try { await histPut(rec); await histPrune(); } catch (e) { console.warn("목록 저장 실패", e); showToast("목록에 저장하지 못했습니다(PPT 생성은 정상).", "error"); }
+    refreshHistoryBadge();
+
+    offerDownloadAndShare(rec, recordData);
+    showToast(`PPT가 생성되었습니다. (소요시수 계 ${total.toFixed(1)} M/H)`, "success");
+  } catch (err) {
+    console.error(err);
+    // 원인 파악용: 오류 종류를 화면에 함께 표시 (담당자에게 이 문구를 알려주면 원인 확인이 쉬움)
+    const reason = (typeof PptxGenJS === "undefined")
+      ? "PPT 생성 부품(pptxgen.bundle.js)을 불러오지 못했습니다. 파일이 같은 폴더에 있는지 확인 후 새로고침하세요."
+      : (err && err.message ? err.message : String(err));
+    showToast(`PPT 생성 중 오류: ${reason}`, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "PPT 생성";
+  }
+}
+document.getElementById("generateBtn").addEventListener("click", handleGenerate);
+
+// 카톡 전송에서 담당자 메일 전송으로 프로세스가 바뀜에 따라, 받는사람을 고정해둔다.
+// 항목이 늘어나면(예: 담당자가 여러 명) 이 값만 배열로 바꾸면 된다.
+const RECIPIENT_EMAIL = "sehee2789@hanwhaoceanpartners.com";
+
+// ── 앱(APK) 전용: 폰의 "공유" 창으로 PPT를 첨부해서 보낸다 ──────────────
+// 웹 브라우저에서는 사용되지 않고, Capacitor 앱(window.Capacitor)에서만 동작한다.
+// 파일 저장(Filesystem) → 공유창(Share) 순서. 공유창에서 메일 앱을 고르면 PPT가 첨부된 상태로 열린다.
+function isNativeApp() {
+  return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+// 앱 안에 주입되는 window.Capacitor 에는 registerPlugin 이 없는 경우가 있어(번들러 없는 단일 HTML),
+// 네이티브 플러그인은 window.Capacitor.Plugins.<이름> 으로 우선 접근하고, 없을 때만 registerPlugin 을 시도한다.
+function getNativePlugin(name) {
+  const cap = window.Capacitor;
+  if (cap && cap.Plugins && cap.Plugins[name]) return cap.Plugins[name];
+  if (cap && typeof cap.registerPlugin === "function") return cap.registerPlugin(name);
+  throw new Error(`네이티브 플러그인(${name})을 찾지 못했습니다`);
+}
+async function shareFileNative(blob, fileName, subject, body) {
+  const Filesystem = getNativePlugin("Filesystem");
+  const Share = getNativePlugin("Share");
+  const data = await blobToBase64(blob);
+  const saved = await Filesystem.writeFile({ path: fileName, data, directory: "CACHE" });
+  await Share.share({ title: subject, text: body, files: [saved.uri], dialogTitle: "담당자에게 보내기" });
+}
+
+// 버튼 아이콘 (이모지는 폰마다 모양이 달라 SVG로 통일)
+const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const ICON_EDIT = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+const ICON_PLUS = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 5v14M5 12h14"/></svg>';
+const APP_VERSION = "1.5.4";
+document.getElementById("appVersion").textContent = `삼목수추 v${APP_VERSION}`;
+
+const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/* ────────────────────────────────────────────────
+   내 PPT 목록(이력) — 이 폰의 브라우저 저장소(IndexedDB)에만 저장됨
+   · 서버로 전송되지 않음. 최근 HISTORY_MAX 건까지만 보관(오래된 것부터 자동 삭제).
+   · 저장 내용: 입력값, 사진 축소본(미리보기용), 생성된 PPT 파일, 전송 상태
+──────────────────────────────────────────────── */
+const HISTORY_DB = "backcharge_history";
+const HISTORY_STORE = "records";
+const HISTORY_MAX = 20;
+
+function histOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(HISTORY_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(HISTORY_STORE, { keyPath: "id" });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function histTx(mode, fn) {
+  const db = await histOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(HISTORY_STORE, mode);
+    const req = fn(tx.objectStore(HISTORY_STORE));
+    tx.oncomplete = () => { db.close(); resolve(req ? req.result : undefined); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+const histPut = (rec) => histTx("readwrite", (s) => s.put(rec));
+const histGet = (id) => histTx("readonly", (s) => s.get(id));
+const histAll = () => histTx("readonly", (s) => s.getAll());
+const histDelete = (id) => histTx("readwrite", (s) => s.delete(id));
+async function histUpdate(id, patch) {
+  const rec = await histGet(id);
+  if (!rec) return null;
+  Object.assign(rec, patch);
+  await histPut(rec);
+  return rec;
+}
+async function histPrune() {
+  const all = (await histAll()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const old of all.slice(HISTORY_MAX)) await histDelete(old.id);
+}
+
+// 사진을 미리보기용으로 줄인 JPEG로 변환 (원본을 그대로 저장하면 용량이 너무 커짐)
+function makeThumb(dataUrl, max = 900) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * s);
+      c.height = Math.round(img.height * s);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL("image/jpeg", 0.7));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+// 전송 상태. "sent"는 관리자가 직접 확인해 표시한 값이다(폰은 메일이 실제 발송됐는지 알 수 없음).
+const STATUS_LABEL = {
+  created: "미전송 (생성만 됨)",
+  opened: "메일 앱 열림 · 전송 여부 확인 필요",
+  sent: "전송함",
+  notsent: "미전송",
+};
+function statusText(rec) {
+  if (rec.status === "sent") {
+    // 받는 사람은 관리자가 확인창에서 직접 입력한 값(폰은 실제 수신자를 알 수 없음)
+    return rec.sentTo ? `전송함 → ${rec.sentTo} (${fmtTime(rec.sentAt)})` : `전송함 · 받는 사람 미기록 (${fmtTime(rec.sentAt)})`;
+  }
+  return STATUS_LABEL[rec.status] || rec.status;
+}
+function esc(t) {
+  return String(t == null ? "" : t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function pad2(n) { return String(n).padStart(2, "0"); }
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return `${d.getFullYear()}.${pad2(d.getMonth() + 1)}.${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/* ────────────────────────────────────────────────
+   PPT 보내기 (앱: 공유창 / 웹: 다운로드 + 메일 앱)
+   보낸 뒤 앱으로 돌아오면 "메일을 보내셨나요?"를 물어 상태를 기록한다.
+──────────────────────────────────────────────── */
+let pendingConfirmId = null;
+
+/* 폰에 저장: 사용자가 파일 위치를 쉽게 찾도록 "문서/삼목수추" 폴더에 PPT를 저장한다.
+   · 앱: Filesystem 플러그인으로 문서(Documents) 폴더에 저장. 폰/안드로이드 버전에 따라 막히면 공유창(파일에 저장)으로 대신한다.
+   · 웹: 브라우저 다운로드(보통 '다운로드' 폴더) */
+const SAVE_FOLDER = "삼목수추";
+async function saveToPhone(rec) {
+  const blob = new Blob([rec.blob], { type: PPTX_MIME });
+  if (isNativeApp()) {
+    const Filesystem = getNativePlugin("Filesystem");
+    const data = await blobToBase64(blob);
+    try {
+      await Filesystem.writeFile({ path: `${SAVE_FOLDER}/${rec.fileName}`, data, directory: "DOCUMENTS", recursive: true });
+      const where = `내 파일 > 문서 > ${SAVE_FOLDER} > ${rec.fileName}`;
+      try { await histUpdate(rec.id, { savedPath: where }); rec.savedPath = where; } catch (e) { console.warn(e); }
+      return { ok: true, where };
+    } catch (err) {
+      console.warn("문서 폴더 저장 실패", err);
+      // 대체 경로: 공유창에서 '파일에 저장' / '내 파일' / 드라이브 등을 선택해 저장
+      await shareFileNative(blob, rec.fileName, rec.fileName, "PPT 저장");
+      return { ok: false, where: "공유창에서 「파일에 저장」 또는 「내 파일」을 선택해 원하는 폴더에 저장하세요." };
+    }
+  }
+  // 아이폰: 공유창의 「파일에 저장」으로 원하는 폴더에 저장
+  const shareFile = new File([blob], rec.fileName, { type: PPTX_MIME });
+  if (/iPhone|iPad|iPod/i.test(navigator.userAgent) && navigator.canShare && navigator.canShare({ files: [shareFile] })) {
+    try { await navigator.share({ files: [shareFile] }); } catch (err) { if (!(err && err.name === "AbortError")) throw err; }
+    return { ok: false, where: "공유창에서 「파일에 저장」을 선택하면 「나의 iPhone」 안 원하는 폴더에 저장됩니다." };
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = rec.fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+  return { ok: true, where: `다운로드 폴더 > ${rec.fileName}` };
+}
+async function saveToPhoneWithMessage(rec, after) {
+  try {
+    const r = await saveToPhone(rec);
+    alert((r.ok ? "폰에 저장했습니다.\n\n저장 위치\n" : "저장 안내\n\n") + r.where);
+    if (after) after();
+  } catch (err) {
+    console.error(err);
+    showToast(`저장 오류: ${err && err.message ? err.message : err}`, "error");
+  }
+}
+
+async function sendRecord(rec) {
+  const base = rec.fileName.replace(/\.pptx$/i, "");
+  // 등록자 이름은 파일명에 이미 들어 있으므로 제목에 다시 넣지 않는다.
+  const subject = `[작업 등록] ${base}`;
+  const body = `등록자: ${rec.admin.name} (${rec.admin.id})\nPROJ.: ${rec.header.proj}\n작업명: ${rec.header.title}`;
+  const blob = new Blob([rec.blob], { type: PPTX_MIME });
+
+  rec.status = "opened";
+  rec.openedAt = new Date().toISOString();
+  try { await histUpdate(rec.id, { status: "opened", openedAt: rec.openedAt }); } catch (e) { console.warn(e); }
+  pendingConfirmId = rec.id;
+  refreshHistoryBadge();
+
+  if (isNativeApp()) {
+    await shareFileNative(blob, rec.fileName, subject, body);
+  } else {
+    // 아이폰(Safari/홈 화면 앱)·안드로이드 크롬: 파일 공유창을 지원하면 PPT를 첨부해서 메일 앱 선택
+    const shareFile = new File([blob], rec.fileName, { type: PPTX_MIME });
+    if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
+      try {
+        await navigator.share({ files: [shareFile], title: subject, text: body });
+        pendingConfirmId = null;
+        askSentConfirm(rec.id);
+      } catch (err) {
+        pendingConfirmId = null;
+        if (!(err && err.name === "AbortError")) throw err;   // 사용자가 공유창을 닫은 경우는 오류가 아님
+      }
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = rec.fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+    const mailBody = `${body}\n\n(다운로드된 ${rec.fileName} 파일을 첨부해주세요.)`;
+    window.location.href = `mailto:${RECIPIENT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(mailBody)}`;
+    showToast("메일 앱이 열립니다. 다운로드된 파일을 첨부해주세요.", "success");
+  }
+}
+
+// 메일 앱을 갔다가 돌아오면(화면이 다시 보이면) 전송 여부를 물어본다.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && pendingConfirmId) {
+    const id = pendingConfirmId;
+    pendingConfirmId = null;
+    askSentConfirm(id);
+  }
+});
+
+// 받는 사람 주소를 묻는다. 최근 입력한 주소는 이 폰에 기억해 두었다가 목록으로 제안한다.
+const RECENT_TO_KEY = "backcharge_recent_to";
+function getRecentRecipients() {
+  try { return JSON.parse(localStorage.getItem(RECENT_TO_KEY) || "[]"); } catch (e) { return []; }
+}
+function rememberRecipient(addr) {
+  try {
+    const list = [addr, ...getRecentRecipients().filter((a) => a !== addr)].slice(0, 8);
+    localStorage.setItem(RECENT_TO_KEY, JSON.stringify(list));
+  } catch (e) { /* 저장 실패는 무시 */ }
+}
+function askRecipient() {
+  return new Promise((resolve) => {
+    const modal = document.getElementById("confirmModal");
+    document.getElementById("confirmStep1").style.display = "none";
+    document.getElementById("confirmStep2").style.display = "block";
+    modal.style.display = "flex";
+    const input = document.getElementById("confirmTo");
+    const recent = getRecentRecipients();
+    input.value = RECIPIENT_EMAIL;   // 기본값은 항상 담당자 메일 (다른 사람에게 보냈으면 수정, 최근 주소는 목록에서 선택)
+    document.getElementById("dl_recipients").innerHTML =
+      [RECIPIENT_EMAIL, ...recent.filter((a) => a !== RECIPIENT_EMAIL)].map((a) => `<option value="${esc(a)}"></option>`).join("");
+    const close = (val) => { modal.style.display = "none"; resolve(val); };
+    document.getElementById("confirmToOk").onclick = () => {
+      const v = input.value.trim();
+      if (!v) { showToast("받는 사람 주소를 입력해주세요.", "error"); return; }
+      rememberRecipient(v);
+      close(v);
+    };
+    document.getElementById("confirmToCancel").onclick = () => close(null);
+  });
+}
+
+async function markSent(id) {
+  const to = await askRecipient();
+  if (!to) return false;
+  await histUpdate(id, { status: "sent", sentAt: new Date().toISOString(), sentTo: to });
+  return true;
+}
+
+function askSentConfirm(id) {
+  const modal = document.getElementById("confirmModal");
+  document.getElementById("confirmStep1").style.display = "block";
+  document.getElementById("confirmStep2").style.display = "none";
+  modal.style.display = "flex";
+  const finish = () => {
+    refreshHistoryBadge();
+    if (document.getElementById("historyPanel").style.display !== "none") renderHistoryList();
+  };
+  document.getElementById("confirmSent").onclick = async () => {
+    try { if (await markSent(id)) showToast("전송 완료로 기록했습니다.", "success"); } catch (e) { console.warn(e); }
+    finish();
+  };
+  document.getElementById("confirmNotSent").onclick = async () => {
+    modal.style.display = "none";
+    try { await histUpdate(id, { status: "notsent" }); } catch (e) { console.warn(e); }
+    showToast("미전송으로 기록했습니다.", "success");
+    finish();
+  };
+  document.getElementById("confirmLater").onclick = () => { modal.style.display = "none"; finish(); };
+}
+
+/* ────────────────────────────────────────────────
+   내 PPT 목록 화면
+──────────────────────────────────────────────── */
+async function loadMyRecords() {
+  const admin = getSavedAdmin();
+  const all = await histAll();
+  return all
+    .filter((r) => !admin || r.admin.id === admin.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+async function refreshHistoryBadge() {
+  const btn = document.getElementById("historyOpenBtn");
+  if (!btn) return;
+  try {
+    const recs = await loadMyRecords();
+    const need = recs.filter((r) => r.status !== "sent").length;
+    btn.textContent = `내 PPT 목록 (${recs.length})` + (need ? ` · 미전송/확인필요 ${need}` : "");
+  } catch (e) {
+    btn.textContent = "내 PPT 목록";
+  }
+}
+
+function openHistory() {
+  document.getElementById("historyPanel").style.display = "block";
+  document.body.style.overflow = "hidden";
+  renderHistoryList();
+}
+function closeHistory() {
+  document.getElementById("historyPanel").style.display = "none";
+  document.body.style.overflow = "";
+  refreshHistoryBadge();
+}
+
+async function renderHistoryList() {
+  const body = document.getElementById("historyBody");
+  document.getElementById("historyTitle").textContent = "내 PPT 목록";
+  document.getElementById("historyBack").onclick = closeHistory;
+  let recs;
+  try {
+    recs = await loadMyRecords();
+  } catch (e) {
+    body.innerHTML = `<div class="hist-empty">목록을 불러오지 못했습니다. (${esc(e && e.message)})</div>`;
+    return;
+  }
+  if (!recs.length) {
+    body.innerHTML = `<div class="hist-empty">아직 생성한 PPT가 없습니다.</div>`;
+    return;
+  }
+  body.innerHTML = `<div class="hist-note">이 폰에서 만든 최근 ${HISTORY_MAX}건까지 보관됩니다. 항목을 누르면 내용을 볼 수 있습니다.</div>`;
+  recs.forEach((rec) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "hist-item";
+    card.innerHTML = `
+      <div class="hist-name">${esc(rec.fileName)}</div>
+      <div class="hist-meta">${esc(fmtTime(rec.createdAt))} · ${esc(rec.total.toFixed(1))} M/H · 사진 ${rec.photos.length}장</div>
+      <div class="hist-status st-${esc(rec.status)}">${esc(statusText(rec))}</div>`;
+    card.addEventListener("click", () => renderHistoryDetail(rec.id));
+    body.appendChild(card);
+  });
+}
+
+async function renderHistoryDetail(id) {
+  const body = document.getElementById("historyBody");
+  let rec;
+  try { rec = await histGet(id); } catch (e) { rec = null; }
+  if (!rec) { renderHistoryList(); return; }
+  document.getElementById("historyTitle").textContent = "PPT 상세";
+  document.getElementById("historyBack").onclick = renderHistoryList;
+
+  body.innerHTML = `
+    <div class="hist-name" style="margin-bottom:4px;">${esc(rec.fileName)}</div>
+    <div class="hist-meta">${esc(fmtTime(rec.createdAt))} 생성</div>
+    <div class="hist-status st-${esc(rec.status)}" style="margin:6px 0 10px;">${esc(statusText(rec))}</div>
+    <div class="hist-actions">
+      <button type="button" class="primary" id="histSend">${rec.status === "sent" ? "다시 보내기" : "PPT 보내기"}</button>
+    </div>
+    <div class="hist-actions">
+      <button type="button" class="big-btn" id="histSave">${ICON_FOLDER}폰에 저장 (파일 위치 확인)</button>
+    </div>
+    ${rec.savedPath ? `<div class="hist-meta" style="margin:-2px 0 10px;">저장 위치: ${esc(rec.savedPath)}</div>` : ""}
+    <div class="hist-actions">
+      <button type="button" class="chip-btn" id="histMarkSent">전송함으로 표시</button>
+      <button type="button" class="chip-btn" id="histMarkNot">미전송으로 표시</button>
+      <button type="button" class="chip-btn danger" id="histDelete">삭제</button>
+    </div>
+    <div class="hist-note" style="margin-top:12px;">미리보기 (PPT 내용을 같은 배치로 그린 화면입니다)
+      <button type="button" class="chip-btn" id="histZoom" style="margin-left:8px;">확대</button></div>
+    <div class="preview-scroll" id="previewScroll"></div>`;
+
+  const scroll = document.getElementById("previewScroll");
+  const fitWidth = Math.min(window.innerWidth - 32, 680);
+  let zoomed = false;
+  const draw = () => {
+    scroll.innerHTML = "";
+    scroll.appendChild(buildPreviewEl(rec, zoomed ? fitWidth * 2.6 : fitWidth));
+    document.getElementById("histZoom").textContent = zoomed ? "맞춤" : "확대";
+  };
+  draw();
+  document.getElementById("histZoom").onclick = () => { zoomed = !zoomed; draw(); };
+
+  document.getElementById("histSend").onclick = async () => {
+    try { await sendRecord(rec); } catch (err) {
+      console.error(err);
+      showToast(`공유 오류: ${err && err.message ? err.message : err}`, "error");
+    }
+  };
+  document.getElementById("histSave").onclick = () => saveToPhoneWithMessage(rec, () => renderHistoryDetail(rec.id));
+  document.getElementById("histMarkSent").onclick = async () => {
+    if (await markSent(rec.id)) renderHistoryDetail(rec.id);   // 받는 사람 주소를 함께 입력받음
+  };
+  document.getElementById("histMarkNot").onclick = async () => {
+    await histUpdate(rec.id, { status: "notsent" });
+    renderHistoryDetail(rec.id);
+  };
+  document.getElementById("histDelete").onclick = async () => {
+    if (!confirm("이 항목을 목록에서 삭제할까요? (이미 보낸 메일에는 영향이 없습니다)")) return;
+    await histDelete(rec.id);
+    renderHistoryList();
+  };
+}
+
+// 저장된 입력값으로 PPT와 같은 배치(8행x11열 표 + 사진 + 자재성 표)를 HTML로 다시 그린다.
+// 실제 .pptx 파일을 렌더링하는 것이 아니라 같은 좌표(SLIDE_W, COL_W, ROW_H)로 그린 미리보기이다.
+function buildPreviewEl(rec, pxWidth) {
+  const s = pxWidth / SLIDE_W; // 1인치당 픽셀
+  const wrap = document.createElement("div");
+  wrap.className = "preview-slide";
+  wrap.style.cssText = `position:relative;width:${pxWidth}px;height:${SLIDE_H * s}px;`;
+  const add = (x, y, w, h, html, css) => {
+    const d = document.createElement("div");
+    d.style.cssText = `position:absolute;left:${x * s}px;top:${y * s}px;width:${w * s}px;height:${h * s}px;box-sizing:border-box;${css || ""}`;
+    if (html != null) d.innerHTML = html;
+    wrap.appendChild(d);
+    return d;
+  };
+  const fs = (pt) => `${(pt * s) / 72}px`;
+  const GRAY = "#D9D9D9", WHITE = "#FFFFFF";
+
+  add(0.443, 0, 4.341, 0.545, "□ 생산 Back Charge", `display:flex;align-items:center;font-weight:700;font-size:${fs(24)};`);
+  add(0, 0.545, SLIDE_W, 0, "", "border-top:1px solid #404040;");
+
+  const cell = (r1, r2, c1, c2, text, o) => {
+    o = o || {};
+    const g = region(r1, r2, c1, c2);
+    add(g.x, g.y, g.w, g.h, esc(text),
+      `border:1px solid #B4B2A9;background:${o.fill || WHITE};display:flex;align-items:center;` +
+      `justify-content:${o.left ? "flex-start" : "center"};text-align:${o.left ? "left" : "center"};` +
+      `padding:0 ${0.05 * s}px;font-size:${fs(o.pt || 11)};font-weight:${o.normal ? 400 : 700};` +
+      `color:${o.color || "#1B2430"};white-space:pre-wrap;overflow:hidden;`);
+  };
+  const h = rec.header;
+  cell(0, 1, 0, 1, "PROJ.", { fill: GRAY });
+  cell(0, 1, 1, 3, h.proj);
+  cell(0, 1, 3, 4, "발생일자", { fill: GRAY });
+  cell(0, 1, 4, 6, h.date);
+  cell(0, 1, 6, 8, "작업기간(추정)", { fill: GRAY });
+  cell(0, 1, 8, 11, h.period);
+  cell(1, 2, 0, 1, "작업명", { fill: GRAY });
+  cell(1, 2, 1, 9, h.title);
+  cell(1, 2, 9, 10, "STAGE", { fill: GRAY });
+  cell(1, 2, 10, 11, h.stage);
+  cell(2, 3, 0, 1, "공종", { fill: GRAY });
+  cell(2, 3, 1, 2, h.gongjong);
+  cell(2, 3, 2, 3, "원인조직", { fill: GRAY });
+  cell(2, 3, 3, 5, h.causeOrg);
+  cell(2, 3, 5, 7, "작업부서", { fill: GRAY });
+  cell(2, 3, 7, 9, h.dept);
+  cell(2, 3, 9, 10, "작업 직/반", { fill: GRAY });
+  cell(2, 3, 10, 11, h.vendor);
+  cell(3, 4, 0, 4, "원인 및 문제점", { fill: GRAY });
+  cell(3, 4, 4, 11, "상세 작업 내용", { fill: GRAY });
+  cell(4, 8, 0, 4, "");
+  cell(4, 5, 4, 6, "작업내용", { fill: GRAY, pt: 10.5 });
+  cell(4, 5, 6, 11, rec.workContent, { left: true, normal: true, pt: 12 });
+  cell(5, 6, 4, 6, "자재성\n산출기준", { fill: GRAY, pt: 10.5 });
+  cell(5, 6, 6, 11, "");
+  cell(6, 7, 4, 6, "비자재성\n산출기준", { fill: GRAY, pt: 10.5 });
+  cell(6, 7, 6, 11, "");
+  cell(7, 8, 4, 6, "소요시수 계", { fill: GRAY, pt: 10.5 });
+  cell(7, 8, 6, 11, rec.mhText !== undefined ? rec.mhText : `${rec.total.toFixed(1)} M/H`, { pt: 12, color: "#1A3FA0" });
+
+  // 사진 격자 (PPT와 같은 규칙: 열 = 올림(√장수))
+  const pr = region(4, 8, 0, 4);
+  if (!rec.photos.length) {
+    add(pr.x, pr.y, pr.w, pr.h, "&lt;사진첨부&gt;", `display:flex;align-items:center;justify-content:center;color:#9A978C;font-size:${fs(14)};`);
+  } else {
+    const n = rec.photos.length, cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols), gap = 0.05;
+    const cw = (pr.w - gap * (cols - 1)) / cols, ch = (pr.h - gap * (rows - 1)) / rows;
+    rec.photos.forEach((src, i) => {
+      add(pr.x + (i % cols) * (cw + gap), pr.y + Math.floor(i / cols) * (ch + gap), cw, ch,
+        `<img src="${src}" style="width:100%;height:100%;object-fit:contain;display:block;" alt="">`);
+    });
+  }
+
+  // 자재성 산출기준 칸은 비워 둔다(담당자가 직접 입력).
+  return wrap;
+}
+
+/* ────────────────────────────────────────────────
+   PPT 생성 직후 하단 버튼 영역 (보내기 / 내 PPT 목록 / 다시 작성)
+──────────────────────────────────────────────── */
+function showGenerateButton() {
+  const inner = document.getElementById("actionInner");
+  inner.innerHTML = '<button class="primary" id="generateBtn">PPT 생성</button>';
+  document.getElementById("generateBtn").addEventListener("click", handleGenerate);
+  document.getElementById("actionSecondary").innerHTML = "";
+}
+
+// 새 등록: 사진/작업명/원인조직/작업내용/소요시수를 비운다. (PROJ./STAGE/날짜는 연속 입력이 많아 유지)
+function resetForm() {
+  photos = [];
+  renderPhotoGrid();
+  document.getElementById("workContent").value = "";
+  document.getElementById("h_title").value = "";
+  document.getElementById("h_causeorg").value = "";
+  mhPeopleEl.value = ""; mhHoursEl.value = ""; updateManhour();
+  showGenerateButton();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function offerDownloadAndShare(rec, recordData) {
+  const inner = document.getElementById("actionInner");
+  inner.innerHTML = "";
+
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "primary";
+  sendBtn.textContent = isNativeApp() ? "PPT 보내기 (메일 앱 선택)" : "담당자 메일로 보내기";
+  sendBtn.addEventListener("click", async () => {
+    try { await sendRecord(rec); } catch (err) {
+      console.error(err);
+      showToast(`공유 오류: ${err && err.message ? err.message : err}`, "error");
+    }
+  });
+  inner.appendChild(sendBtn);
+
+  const listBtn = document.createElement("button");
+  listBtn.className = "secondary";
+  listBtn.textContent = "내 PPT 목록";
+  listBtn.addEventListener("click", openHistory);
+  inner.appendChild(listBtn);
+
+  const secondary = document.getElementById("actionSecondary");
+  secondary.innerHTML = "";
+  const note = document.createElement("div");
+  note.style.cssText = "font-size:11.5px;color:var(--muted);margin-bottom:4px;";
+  note.textContent = isNativeApp()
+    ? `공유창에서 메일 앱을 고르고, 받는 사람에 ${RECIPIENT_EMAIL} 을 입력하세요.`
+    : "메일 앱이 열리면 방금 다운로드된 PPT 파일을 첨부해주세요.";
+  secondary.appendChild(note);
+
+  // 보조 버튼은 손가락으로 누르기 쉽게 큰 버튼으로 표시한다.
+  const links = document.createElement("div");
+  links.style.cssText = "display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:2px;";
+  const mkLink = (text, fn) => {
+    const bt = document.createElement("button");
+    bt.type = "button"; bt.className = "big-btn"; bt.innerHTML = text;
+    bt.addEventListener("click", fn);
+    links.appendChild(bt);
+  };
+  mkLink(ICON_FOLDER + "폰에 저장", () => saveToPhoneWithMessage(rec));
+  mkLink(ICON_EDIT + "수정", showGenerateButton);
+  mkLink(ICON_PLUS + "새 등록", resetForm);
+  if (!isNativeApp()) {
+    // 통계/현황판 연동용 JSON (웹 버전 전용). 앱에서는 파일 다운로드가 막혀 있어 제공하지 않는다.
+    const jsonUrl = URL.createObjectURL(new Blob([JSON.stringify(recordData, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = jsonUrl; a.download = rec.fileName.replace(/\.pptx$/i, ".json");
+    a.textContent = "현황판용 데이터(JSON) 저장";
+    a.style.cssText = "font-size:12px;color:var(--muted);text-decoration:underline;";
+    links.appendChild(a);
+  }
+  secondary.appendChild(links);
+}
+
+// ---- 온라인/오프라인 상태 ----
+function updateStatus() {
+  const chip = document.getElementById("statusChip");
+  const text = document.getElementById("statusText");
+  if (navigator.onLine) { chip.classList.remove("offline"); text.textContent = "온라인"; }
+  else { chip.classList.add("offline"); text.textContent = "오프라인 (로컬 생성 가능)"; }
+}
+window.addEventListener("online", updateStatus);
+window.addEventListener("offline", updateStatus);
+updateStatus();
+
+// 내 PPT 목록 버튼
+document.getElementById("historyOpenBtn").addEventListener("click", openHistory);
+refreshHistoryBadge();
+
+// ---- 서비스워커 등록 ----
+if ("serviceWorker" in navigator && !isNativeApp()) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch((err) => console.warn("SW 등록 실패:", err));
+  });
+}
+</script>
+</body>
+</html>
