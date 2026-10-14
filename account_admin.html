@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>삼목수추 계정 등록</title>
+<style>
+  :root { --bg:#F3F4F1; --card:#fff; --ink:#1B2430; --muted:#5B6575; --line:#D9DCD3; --accent:#E8590C; --ok:#1B7F3B; --bad:#B91C1C; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#171C24; --card:#212936; --ink:#EDF0F5; --muted:#9AA3B2; --line:#364152; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 "Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 18px 16px 40px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; } .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:12px; }
+  .warn { border-color:#E5B8B2; } .warn b { color: var(--bad); }
+  label { display:block; font-weight:700; font-size:13px; margin: 0 0 6px; }
+  textarea { width:100%; min-height:190px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font: 14px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  button { width:100%; padding:13px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:15px; font-weight:700; cursor:pointer; margin-top:10px; }
+  button.sec { background:transparent; color:var(--ink); border:1px solid var(--line); }
+  button:disabled { opacity:.45; }
+  ol, ul { margin: 6px 0 0; padding-left: 20px; font-size: 13.5px; } li { margin: 3px 0; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { border-bottom:1px solid var(--line); padding: 6px 4px; text-align:left; } th { color: var(--muted); font-weight:700; }
+  .ok { color: var(--ok); font-weight:700; } .bad { color: var(--bad); font-weight:700; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+  #status { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>삼목수추 계정 등록</h1>
+  <div class="sub">로그인 계정을 한 번에 만듭니다. 폰·PC 브라우저에서 바로 쓸 수 있고 설치는 필요 없습니다.</div>
+
+  <div class="card warn">
+    <b>먼저 꼭 읽어 주세요 (보안)</b>
+    <ol>
+      <li>Firebase 콘솔 → Authentication → 설정 → 사용자 작업 에서 <b>「생성(가입) 사용 설정」을 잠시 켭니다.</b></li>
+      <li>아래에서 계정을 모두 만든 뒤 <b>바로 다시 끕니다.</b> 켜 둔 동안에는 누구나 계정을 만들 수 있습니다.</li>
+      <li>이미 있는 사번은 건너뜁니다(비밀번호 변경 불가). 비밀번호 재설정이 필요하면 콘솔에서 그 계정을 삭제한 뒤 여기서 다시 만드세요.</li>
+      <li>결과 표의 비밀번호는 전달 후 지우고, 화면을 닫으면 기록은 남지 않습니다.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <label for="list">계정 목록 (한 줄에 한 명: <code>사번,이름</code> 또는 <code>사번,이름,비밀번호</code>)</label>
+    <textarea id="list" spellcheck="false" placeholder="6397914,윤경수&#10;6195493,김영민,samok2026!"></textarea>
+    <div class="sub" style="margin:6px 0 0">비밀번호를 쓰지 않으면 8자리 무작위 비밀번호가 만들어집니다. 직접 지정할 때는 6자 이상.</div>
+    <button id="run">계정 만들기</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <label>결과</label>
+    <table><thead><tr><th>사번</th><th>이름</th><th>비밀번호</th><th>결과</th></tr></thead><tbody id="rows"></tbody></table>
+    <button class="sec" id="copyBtn">결과 복사</button>
+    <button class="sec" id="csvBtn">CSV로 저장</button>
+  </div>
+</main>
+<script>
+const API_KEY = "AIzaSyDRysn1gFoCVG1XOiUrqw3JqsyaVG_ZY8Y";   // 공개용 키 (비밀번호 아님)
+const DOMAIN = "samok.app";
+const BASE = "https://identitytoolkit.googleapis.com/v1/";
+const $ = (id) => document.getElementById(id);
+const results = [];
+
+function randPw() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const a = new Uint32Array(8); crypto.getRandomValues(a);
+  return Array.from(a, (x) => chars[x % chars.length]).join("");
+}
+async function call(path, body) {
+  const res = await fetch(`${BASE}${path}?key=${API_KEY}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const m = String((data.error && data.error.message) || "UNKNOWN"); const e = new Error(m); e.code = m.split(" ")[0]; throw e; }
+  return data;
+}
+const MSG = {
+  EMAIL_EXISTS: "이미 있음(변경 없음)",
+  OPERATION_NOT_ALLOWED: "가입이 꺼져 있습니다 → 콘솔에서 「생성(가입) 사용 설정」을 켜세요",
+  ADMIN_ONLY_OPERATION: "가입이 꺼져 있습니다 → 콘솔에서 「생성(가입) 사용 설정」을 켜세요",
+  TOO_MANY_ATTEMPTS_TRY_LATER: "요청이 많아 제한됨 → 잠시 후 다시 시도",
+  WEAK_PASSWORD: "비밀번호가 너무 짧음(6자 이상)",
+};
+function addRow(r) {
+  results.push(r);
+  const tr = document.createElement("tr");
+  const cls = r.status.startsWith("생성") ? "ok" : (r.status.startsWith("이미") ? "" : "bad");
+  [r.id, r.name, r.pw || "", r.status].forEach((t, i) => { const td = document.createElement("td"); td.textContent = t; if (i === 3 && cls) td.className = cls; tr.appendChild(td); });
+  $("rows").appendChild(tr);
+}
+function parseList(text) {
+  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+    const p = l.split(/[,\t]/).map((x) => x.trim());
+    return { id: p[0], name: p[1] || "", pw: p[2] || "" };
+  });
+}
+$("run").addEventListener("click", async () => {
+  const items = parseList($("list").value);
+  if (!items.length) { $("status").textContent = "목록을 입력하세요."; return; }
+  $("run").disabled = true; $("rows").innerHTML = ""; results.length = 0; $("resultCard").style.display = "block";
+  let n = 0;
+  for (const it of items) {
+    $("status").textContent = `처리 중... ${++n} / ${items.length}`;
+    if (!/^[0-9A-Za-z]+$/.test(it.id)) { addRow({ ...it, status: "실패: 사번 형식 오류" }); continue; }
+    if (!it.name) { addRow({ ...it, status: "실패: 이름 없음" }); continue; }
+    if (it.pw && it.pw.length < 6) { addRow({ ...it, status: "실패: 비밀번호 6자 미만" }); continue; }
+    const pw = it.pw || randPw();
+    try {
+      const r = await call("accounts:signUp", { email: `${it.id}@${DOMAIN}`, password: pw, returnSecureToken: true });
+      await call("accounts:update", { idToken: r.idToken, displayName: it.name, returnSecureToken: false });
+      addRow({ ...it, pw, status: "생성 완료" });
+    } catch (e) {
+      addRow({ ...it, status: e.code === "EMAIL_EXISTS" ? MSG.EMAIL_EXISTS : ("실패: " + (MSG[e.code] || e.code)) });
+      if (e.code === "OPERATION_NOT_ALLOWED" || e.code === "ADMIN_ONLY_OPERATION") break;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  $("status").textContent = "끝났습니다. 가입 사용 설정을 다시 끄는 것을 잊지 마세요.";
+  $("run").disabled = false;
+});
+function asText() { return ["사번\t이름\t비밀번호\t결과"].concat(results.map((r) => [r.id, r.name, r.pw || "", r.status].join("\t"))).join("\n"); }
+$("copyBtn").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(asText()); $("status").textContent = "복사했습니다."; } catch (e) { $("status").textContent = "복사에 실패했습니다. CSV로 저장을 이용하세요."; }
+});
+$("csvBtn").addEventListener("click", () => {
+  const csv = "﻿사번,이름,비밀번호,결과\n" + results.map((r) => [r.id, r.name, r.pw || "", r.status].join(",")).join("\n") + "\n";
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = "계정_비밀번호목록.csv"; a.click();
+});
+</script>
+</body>
+</html>
