@@ -7,7 +7,7 @@
 //       이후에는 네트워크 없이 PPT 생성까지 가능하다.
 // 이 파일이 하지 않는 것: 사진/입력값 저장 (그런 개인 데이터는 캐싱하지 않음)
 // ============================================================
-const CACHE_NAME = "work-order-form-v20";
+const CACHE_NAME = "work-order-form-v22";
 const PRECACHE_ASSETS = [
   "./수정추가_등록.html",
   "./pptxgen.bundle.js",
