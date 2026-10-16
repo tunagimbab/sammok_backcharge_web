@@ -1008,7 +1008,7 @@ document.getElementById("galleryTrigger").addEventListener("click", () => galler
 async function handlePhotoFiles(e) {
   const files = Array.from(e.target.files || []);
   for (const file of files) {
-    const dataUrl = await fileToDataUrl(file);
+    const dataUrl = await shrinkPhoto(await fileToDataUrl(file));
     photos.push({ file, dataUrl });
   }
   e.target.value = "";
@@ -1016,6 +1016,33 @@ async function handlePhotoFiles(e) {
 }
 cameraInput.addEventListener("change", handlePhotoFiles);
 galleryInput.addEventListener("change", handlePhotoFiles);
+
+// 폰 사진(수 MB)을 그대로 쓰면 PPT·저장 용량이 너무 커지므로 긴 변 PHOTO_MAX_PX 이하의 JPEG로 줄인다.
+// 이미 작은 사진은 원본을 그대로 쓴다. 변환에 실패하면 원본을 그대로 쓴다.
+const PHOTO_MAX_PX = 1600;
+const PHOTO_QUALITY = 0.85;
+function shrinkPhoto(dataUrl, max = PHOTO_MAX_PX, quality = PHOTO_QUALITY) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const longSide = Math.max(img.naturalWidth, img.naturalHeight);
+        if (!longSide || longSide <= max) { resolve(dataUrl); return; }
+        const sc = max / longSide;
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.naturalWidth * sc);
+        c.height = Math.round(img.naturalHeight * sc);
+        const g = c.getContext("2d");
+        g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);   // 투명 PNG 대비 흰 배경
+        g.drawImage(img, 0, 0, c.width, c.height);
+        const out = c.toDataURL("image/jpeg", quality);
+        resolve(out && out.length < dataUrl.length ? out : dataUrl);
+      } catch (e) { resolve(dataUrl); }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -1319,7 +1346,7 @@ async function shareFileNative(blob, fileName, subject, body) {
 const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 const ICON_PLUS = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 5v14M5 12h14"/></svg>';
-const APP_VERSION = "1.6.2";
+const APP_VERSION = "1.6.3";
 document.getElementById("appVersion").textContent = `삼목수추 v${APP_VERSION}`;
 
 const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -1330,36 +1357,74 @@ const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.
    · 저장 내용: 입력값, 사진 축소본(미리보기용), 생성된 PPT 파일, 전송 상태
 ──────────────────────────────────────────────── */
 const HISTORY_DB = "backcharge_history";
-const HISTORY_STORE = "records";
-const HISTORY_MAX = 20;
+const HISTORY_STORE = "records";   // 목록용 정보(이름·날짜·상태 등, 가벼움)
+const FILES_STORE = "files";       // 무거운 데이터(PPT 파일·사진 축소본). 항목을 열거나 보낼 때만 읽는다.
+const HISTORY_VERSION = 2;
+const HISTORY_MAX = 50;   // 보관 건수(전체 사용자 합산, 오래된 것부터 자동 삭제)
 
 function histOpen() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(HISTORY_DB, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(HISTORY_STORE, { keyPath: "id" });
+    const req = indexedDB.open(HISTORY_DB, HISTORY_VERSION);
+    req.onupgradeneeded = (ev) => {
+      const db = req.result, tx = req.transaction;
+      if (!db.objectStoreNames.contains(HISTORY_STORE)) db.createObjectStore(HISTORY_STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(FILES_STORE)) db.createObjectStore(FILES_STORE, { keyPath: "id" });
+      if (ev.oldVersion >= 1 && ev.oldVersion < 2) {
+        // v1(PPT·사진이 한 레코드에 들어 있던 구조) → v2: 기존 기록을 그대로 옮긴다.
+        const rs = tx.objectStore(HISTORY_STORE), fs = tx.objectStore(FILES_STORE);
+        rs.openCursor().onsuccess = (e) => {
+          const cur = e.target.result;
+          if (!cur) return;
+          const r = cur.value;
+          if (r.blob || r.photos) {
+            fs.put({ id: r.id, blob: r.blob, photos: r.photos || [] });
+            const meta = { ...r, photoCount: (r.photos || []).length };
+            delete meta.blob; delete meta.photos;
+            cur.update(meta);
+          }
+          cur.continue();
+        };
+      }
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
+// 여러 저장소를 한 번에 쓰는 트랜잭션. fn(stores)는 요청 객체(또는 요청 배열)를 돌려준다.
 async function histTx(mode, fn) {
   const db = await histOpen();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(HISTORY_STORE, mode);
-    const req = fn(tx.objectStore(HISTORY_STORE));
-    tx.oncomplete = () => { db.close(); resolve(req ? req.result : undefined); };
+    const tx = db.transaction([HISTORY_STORE, FILES_STORE], mode);
+    const out = fn(tx.objectStore(HISTORY_STORE), tx.objectStore(FILES_STORE));
+    tx.oncomplete = () => {
+      db.close();
+      resolve(Array.isArray(out) ? out.map((r) => (r ? r.result : undefined)) : (out ? out.result : undefined));
+    };
     tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
   });
 }
-const histPut = (rec) => histTx("readwrite", (s) => s.put(rec));
-const histGet = (id) => histTx("readonly", (s) => s.get(id));
-const histAll = () => histTx("readonly", (s) => s.getAll());
-const histDelete = (id) => histTx("readwrite", (s) => s.delete(id));
+function splitRecord(rec) {
+  const meta = { ...rec, photoCount: (rec.photos || []).length };
+  delete meta.blob; delete meta.photos;
+  return { meta, files: { id: rec.id, blob: rec.blob, photos: rec.photos || [] } };
+}
+const histPut = (rec) => { const { meta, files } = splitRecord(rec); return histTx("readwrite", (rs, fs) => [rs.put(meta), fs.put(files)]); };
+// 상세·보내기·저장용: 정보 + PPT·사진까지 모두 읽는다(항목 1건).
+async function histGet(id) {
+  const [meta, files] = await histTx("readonly", (rs, fs) => [rs.get(id), fs.get(id)]);
+  if (!meta) return undefined;
+  return { ...meta, blob: files ? files.blob : undefined, photos: files ? files.photos : [] };
+}
+// 목록용: 가벼운 정보만 읽는다(PPT·사진은 읽지 않는다).
+const histAll = () => histTx("readonly", (rs) => rs.getAll());
+const histDelete = (id) => histTx("readwrite", (rs, fs) => [rs.delete(id), fs.delete(id)]);
+// 상태 변경은 목록용 정보만 갱신한다(무거운 PPT를 다시 쓰지 않는다).
 async function histUpdate(id, patch) {
-  const rec = await histGet(id);
-  if (!rec) return null;
-  Object.assign(rec, patch);
-  await histPut(rec);
-  return rec;
+  const meta = await histTx("readonly", (rs) => rs.get(id));
+  if (!meta) return null;
+  Object.assign(meta, patch);
+  await histTx("readwrite", (rs) => rs.put(meta));
+  return meta;
 }
 async function histPrune() {
   const all = (await histAll()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1650,7 +1715,7 @@ async function renderHistoryList() {
     card.className = "hist-item";
     card.innerHTML = `
       <div class="hist-name">${esc(rec.fileName)}</div>
-      <div class="hist-meta">${esc(fmtTime(rec.createdAt))} · ${esc(rec.total.toFixed(1))} M/H · 사진 ${rec.photos.length}장</div>
+      <div class="hist-meta">${esc(fmtTime(rec.createdAt))} · ${esc(rec.total.toFixed(1))} M/H · 사진 ${rec.photoCount != null ? rec.photoCount : (rec.photos ? rec.photos.length : 0)}장</div>
       <div class="hist-status st-${esc(rec.status)}">${esc(statusText(rec))}</div>`;
     card.addEventListener("click", () => renderHistoryDetail(rec.id));
     body.appendChild(card);
