@@ -1336,11 +1336,21 @@ function getNativePlugin(name) {
   if (cap && typeof cap.registerPlugin === "function") return cap.registerPlugin(name);
   throw new Error(`네이티브 플러그인(${name})을 찾지 못했습니다`);
 }
-async function shareFileNative(blob, fileName, subject, body) {
+async function shareFileNative(blob, fileName, subject, body, mailTo) {
   const Filesystem = getNativePlugin("Filesystem");
   const Share = getNativePlugin("Share");
   const data = await blobToBase64(blob);
   const saved = await Filesystem.writeFile({ path: fileName, data, directory: "CACHE" });
+  // 메일 보내기: 받는 사람(담당자)이 미리 채워진 메일 앱을 연다. 실패하면 기존 공유창으로 대신한다.
+  if (mailTo) {
+    try {
+      const Mail = getNativePlugin("MailSender");
+      await Mail.send({ to: mailTo, subject, body, uri: saved.uri, title: "메일 앱 선택" });
+      return;
+    } catch (err) {
+      console.warn("메일 앱 직접 열기 실패, 공유창으로 전환:", err);
+    }
+  }
   await Share.share({ title: subject, text: body, files: [saved.uri], dialogTitle: "담당자에게 보내기" });
 }
 
@@ -1348,7 +1358,7 @@ async function shareFileNative(blob, fileName, subject, body) {
 const ICON_FOLDER = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 const ICON_PLUS = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="vertical-align:-4px;margin-right:5px"><path d="M12 5v14M5 12h14"/></svg>';
-const APP_VERSION = "1.6.4";
+const APP_VERSION = "1.7.0";
 document.getElementById("appVersion").textContent = `삼목수추 v${APP_VERSION}`;
 
 const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -1539,7 +1549,7 @@ async function sendRecord(rec) {
   refreshHistoryBadge();
 
   if (isNativeApp()) {
-    await shareFileNative(blob, rec.fileName, subject, body);
+    await shareFileNative(blob, rec.fileName, subject, body, RECIPIENT_EMAIL);
   } else {
     // 아이폰(Safari/홈 화면 앱)·안드로이드 크롬: 파일 공유창을 지원하면 PPT를 첨부해서 메일 앱 선택
     const shareFile = new File([blob], rec.fileName, { type: PPTX_MIME });
@@ -1744,6 +1754,9 @@ async function renderHistoryDetail(id) {
     </div>
     ${rec.savedPath ? `<div class="hist-meta" style="margin:-2px 0 10px;">저장 위치: ${esc(rec.savedPath)}</div>` : ""}
     <div class="hist-actions">
+      <button type="button" class="big-btn" id="histEdit">${ICON_EDIT}불러와서 수정 (새 항목으로 저장)</button>
+    </div>
+    <div class="hist-actions">
       <button type="button" class="chip-btn" id="histMarkSent">전송함으로 표시</button>
       <button type="button" class="chip-btn" id="histMarkNot">미전송으로 표시</button>
       <button type="button" class="chip-btn danger" id="histDelete">삭제</button>
@@ -1770,6 +1783,7 @@ async function renderHistoryDetail(id) {
     }
   };
   document.getElementById("histSave").onclick = () => saveToPhoneWithMessage(rec, () => renderHistoryDetail(rec.id));
+  document.getElementById("histEdit").onclick = () => loadRecordForEdit(rec);
   document.getElementById("histMarkSent").onclick = async () => {
     if (await markSent(rec.id)) renderHistoryDetail(rec.id);   // 받는 사람 주소를 함께 입력받음
   };
@@ -1782,6 +1796,53 @@ async function renderHistoryDetail(id) {
     await histDelete(rec.id);
     renderHistoryList();
   };
+}
+
+// 저장된 PPT 파일(zip)에서 사진을 원래 크기(긴 변 1600px)로 꺼낸다. 실패하면 null.
+async function extractPhotosFromPptx(blob) {
+  try {
+    if (!blob || typeof JSZip === "undefined") return null;
+    const zip = await JSZip.loadAsync(blob);
+    const names = Object.keys(zip.files)
+      .map((n) => { const m = n.match(/^ppt\/media\/image-\d+-(\d+)\.(jpe?g|png)$/i); return m ? { n, idx: Number(m[1]), ext: m[2].toLowerCase() } : null; })
+      .filter(Boolean).sort((x, y) => x.idx - y.idx);
+    const out = [];
+    for (const f of names) {
+      const b64 = await zip.files[f.n].async("base64");
+      out.push({ file: null, dataUrl: `data:image/${f.ext === "png" ? "png" : "jpeg"};base64,${b64}` });
+    }
+    return out;
+  } catch (e) { console.warn("PPT에서 사진 추출 실패", e); return null; }
+}
+
+// 내 PPT 목록의 항목을 입력 화면으로 불러와 고칠 수 있게 한다. 원본 항목은 그대로 두고, 「PPT 생성」은 새 항목으로 저장한다.
+async function loadRecordForEdit(rec) {
+  if (hasAnyInput() && !confirm("지금 입력 중인 내용이 있습니다. 지우고 이 항목을 불러올까요?")) return;
+  const h = rec.header || {};
+  const iso = (d) => (d || "").replaceAll(".", "-");
+  const setSel = (id, v) => { const el = document.getElementById(id); el.value = v || ""; return el.value === (v || ""); };
+  // PROJ.: 목록에 없는 값이면 직접입력 칸에 넣는다.
+  if (!setSel("h_proj", h.proj) && h.proj) {
+    document.getElementById("h_proj").value = CUSTOM_VALUE;
+    const c = document.getElementById("h_proj_custom"); c.value = h.proj; c.style.display = "block";
+  } else document.getElementById("h_proj_custom").style.display = "none";
+  setSel("h_stage", h.stage);
+  document.getElementById("h_gongjong").value = STAGE_TO_GONGJONG[h.stage] || h.gongjong || "";
+  document.getElementById("h_date").value = iso(h.date);
+  const [ps, pe] = String(h.period || "").split("~");
+  periodStartEl.value = iso(ps); periodEndEl.value = iso(pe); periodIsValid();
+  document.getElementById("h_title").value = h.title || "";
+  setSel("h_causeorg", h.causeOrg);
+  document.getElementById("workContent").value = rec.workContent || "";
+  mhPeopleEl.value = rec.manpower ? rec.manpower : ""; mhHoursEl.value = rec.hours ? rec.hours : ""; updateManhour();
+  const fromPptx = await extractPhotosFromPptx(rec.blob);
+  const useOrig = fromPptx && fromPptx.length === (rec.photoCount != null ? rec.photoCount : (rec.photos || []).length);
+  photos = useOrig ? fromPptx : (rec.photos || []).map((d) => ({ file: null, dataUrl: d }));
+  renderPhotoGrid();
+  showGenerateButton();
+  closeHistory();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  showToast("불러왔습니다. 고친 뒤 「PPT 생성」을 누르면 새 항목으로 저장됩니다.", "success");
 }
 
 // 저장된 입력값으로 PPT와 같은 배치(8행x11열 표 + 사진 + 자재성 표)를 HTML로 다시 그린다.
@@ -1928,7 +1989,7 @@ function offerDownloadAndShare(rec, recordData) {
   const note = document.createElement("div");
   note.style.cssText = "font-size:11.5px;color:var(--muted);margin-bottom:4px;";
   note.textContent = isNativeApp()
-    ? `공유창에서 메일 앱을 고르고, 받는 사람에 ${RECIPIENT_EMAIL} 을 입력하세요.`
+    ? `메일 앱을 고르면 받는 사람에 ${RECIPIENT_EMAIL} 이 미리 입력됩니다. 비어 있으면 직접 입력하세요.`
     : "메일 앱이 열리면 방금 다운로드된 PPT 파일을 첨부해주세요.";
   secondary.appendChild(note);
 
