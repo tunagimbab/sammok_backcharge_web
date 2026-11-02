@@ -1,0 +1,11 @@
+{
+  "latest": "1.8.0",
+  "min": "1.8.0",
+  "apk": "https://github.com/tunagimbab/sammok_backcharge_web/releases/download/v1.8.0/samok-1.8.0.apk",
+  "sha256": "1ffd97179a62c5ccbc19f75fff4c08fe1b7901645806d97ca10fa48aa71354ee",
+  "notes": [
+    "새 버전 확인·업데이트 안내 기능이 추가되었습니다.",
+    "이전에 만든 PPT를 목록에서 불러와 수정할 수 있습니다.",
+    "PPT 보내기 시 담당자 메일이 미리 입력됩니다."
+  ]
+}
